@@ -11,7 +11,7 @@ import { dirname, join as pathJoin } from "node:path";
 // 特定フレーズで効果音を鳴らすマッピング
 const SOUND_DIR = pathJoin(dirname(fileURLToPath(import.meta.url)), "..");
 const SOUND_TRIGGERS = new Map([
-  ["やりますねぇ！", pathJoin(SOUND_DIR, "sound.wav")],
+  ["やりますねぇ！", pathJoin(SOUND_DIR, "sound_quiet.wav")],
 ]);
 
 const { DISCORD_TOKEN } = process.env;

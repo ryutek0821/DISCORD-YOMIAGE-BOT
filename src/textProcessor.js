@@ -1,6 +1,6 @@
 import { getDictionary } from "./store.js";
 
-const MAX_LENGTH = 200;
+const MAX_LENGTH = 50;
 
 // サーバー辞書による読み替え (単純な全置換)
 export function applyDictionary(text, guildId) {
@@ -53,7 +53,7 @@ export function buildSpeech(message, guildId) {
   // 連続空白を畳んで上限カット
   text = text.replace(/\s+/g, " ").trim();
   if (text.length > MAX_LENGTH) {
-    text = text.slice(0, MAX_LENGTH) + " 以下省略";
+    text = text.slice(0, MAX_LENGTH) + " 以下略";
   }
 
   return text;

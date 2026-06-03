@@ -84,21 +84,19 @@ export function leave(guildId) {
   return false;
 }
 
-// WAV Buffer を ffmpeg で Opus に変換しつつ再生
-function wavToResource(wav) {
-  const ff = spawn(
-    ffmpegPath,
-    [
-      "-i", "pipe:0",
-      "-analyzeduration", "0",
-      "-loglevel", "0",
-      "-f", "s16le",
-      "-ar", "48000",
-      "-ac", "2",
-      "pipe:1",
-    ],
-    { stdio: ["pipe", "pipe", "ignore"] }
-  );
+// WAV Buffer を ffmpeg で Opus に変換しつつ再生 (volume: 0.0〜1.0、デフォルト 1.0)
+function wavToResource(wav, volume = 1.0) {
+  const args = [
+    "-i", "pipe:0",
+    "-analyzeduration", "0",
+    "-loglevel", "0",
+  ];
+  if (volume !== 1.0) {
+    args.push("-af", `volume=${volume}`);
+  }
+  args.push("-f", "s16le", "-ar", "48000", "-ac", "2", "pipe:1");
+
+  const ff = spawn(ffmpegPath, args, { stdio: ["pipe", "pipe", "ignore"] });
   Readable.from(wav).pipe(ff.stdin);
   ff.stdin.on("error", () => {});
   return createAudioResource(ff.stdout, { inputType: StreamType.Raw });
@@ -113,13 +111,15 @@ async function drain(guildId) {
   session.playing = true;
   try {
     let wav;
+    let volume = 1.0;
     if (next.kind === "file") {
       wav = readFileSync(next.path);
+      volume = next.volume ?? 1.0;
     } else {
       const { speaker, speed } = getGuildSettings(guildId);
       wav = await synth(next.text, speaker, speed);
     }
-    session.player.play(wavToResource(wav));
+    session.player.play(wavToResource(wav, volume));
   } catch (err) {
     console.error("play error:", err);
     session.playing = false;
@@ -134,9 +134,9 @@ export function enqueue(guildId, text) {
   drain(guildId);
 }
 
-export function enqueueFile(guildId, path) {
+export function enqueueFile(guildId, path, volume = 1.0) {
   const session = sessions.get(guildId);
   if (!session || !path) return;
-  session.queue.push({ kind: "file", path });
+  session.queue.push({ kind: "file", path, volume });
   drain(guildId);
 }
