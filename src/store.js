@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 const dataDir = join(dirname(fileURLToPath(import.meta.url)), "..", "data");
 const settingsPath = join(dataDir, "guildSettings.json");
 const dictPath = join(dataDir, "dictionary.json");
+const userSettingsPath = join(dataDir, "userSettings.json");
 
 const DEFAULT_SETTINGS = { speaker: 3, speed: 1.0, channelId: null };
 
@@ -23,6 +24,7 @@ function ensureDir() {
 
 let settings = load(settingsPath); // { [guildId]: { speaker, speed, channelId } }
 let dictionary = load(dictPath); // { [guildId]: [{ word, reading }] }
+let userSettings = load(userSettingsPath); // 全サーバー共通 { [userId]: { speaker?, speed? } }
 
 function save(path, obj) {
   ensureDir();
@@ -56,4 +58,22 @@ export function removeDictionaryEntry(guildId, word) {
   dictionary[guildId] = after;
   save(dictPath, dictionary);
   return before.length !== after.length;
+}
+
+// 個人の話者設定 (全サーバー共通、userId 単位)。未設定なら null。
+export function getUserSettings(userId) {
+  return userSettings[userId] || null;
+}
+
+export function updateUserSettings(userId, patch) {
+  userSettings[userId] = { ...(userSettings[userId] || {}), ...patch };
+  save(userSettingsPath, userSettings);
+  return userSettings[userId];
+}
+
+export function clearUserSettings(userId) {
+  if (!userSettings[userId]) return false;
+  delete userSettings[userId];
+  save(userSettingsPath, userSettings);
+  return true;
 }

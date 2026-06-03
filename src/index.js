@@ -5,6 +5,7 @@ import { getSession, enqueue, enqueueFile, leave, join } from "./player.js";
 import { getGuildSettings, updateGuildSettings } from "./store.js";
 import { buildSpeech, applyDictionary } from "./textProcessor.js";
 import { isAlive } from "./voicevox.js";
+import { resolveUserVoice } from "./userVoice.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join as pathJoin } from "node:path";
 
@@ -65,7 +66,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
 });
 
-client.on(Events.MessageCreate, (message) => {
+client.on(Events.MessageCreate, async (message) => {
   if (!message.guild || message.author.bot) return;
   const session = getSession(message.guild.id);
   if (!session) return;
@@ -80,7 +81,10 @@ client.on(Events.MessageCreate, (message) => {
   }
 
   const text = buildSpeech(message, message.guild.id);
-  if (text) enqueue(message.guild.id, text);
+  if (!text) return;
+  // 発言者ごとの声で読み上げる (未設定者は userId から固定割り当て)
+  const voice = await resolveUserVoice(message.author.id, message.guild.id);
+  enqueue(message.guild.id, text, voice);
 });
 
 client.on(Events.VoiceStateUpdate, async (oldState, newState) => {

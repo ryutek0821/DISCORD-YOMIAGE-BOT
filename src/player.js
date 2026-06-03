@@ -116,7 +116,7 @@ async function drain(guildId) {
       wav = readFileSync(next.path);
       volume = next.volume ?? 1.0;
     } else {
-      const { speaker, speed } = getGuildSettings(guildId);
+      const { speaker, speed } = next.voice ?? getGuildSettings(guildId);
       wav = await synth(next.text, speaker, speed);
     }
     session.player.play(wavToResource(wav, volume));
@@ -127,10 +127,10 @@ async function drain(guildId) {
   }
 }
 
-export function enqueue(guildId, text) {
+export function enqueue(guildId, text, voice) {
   const session = sessions.get(guildId);
   if (!session || !text) return;
-  session.queue.push({ kind: "tts", text });
+  session.queue.push({ kind: "tts", text, voice });
   drain(guildId);
 }
 

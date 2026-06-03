@@ -15,6 +15,15 @@ export async function getSpeakers() {
   return res.json();
 }
 
+let speakerIdsCache = null;
+// 有効な話者(スタイル)IDの一覧。初回取得後はメモリにキャッシュする。
+export async function getSpeakerIds() {
+  if (speakerIdsCache) return speakerIdsCache;
+  const speakers = await getSpeakers();
+  speakerIdsCache = speakers.flatMap((sp) => sp.styles.map((st) => st.id));
+  return speakerIdsCache;
+}
+
 // テキストを WAV (Buffer) に合成する
 export async function synth(text, speaker, speedScale = 1.0) {
   const queryRes = await request(

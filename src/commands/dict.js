@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, MessageFlags } from "discord.js";
+import { SlashCommandBuilder, MessageFlags, PermissionFlagsBits } from "discord.js";
 import {
   addDictionaryEntry,
   removeDictionaryEntry,
@@ -34,6 +34,17 @@ export const data = new SlashCommandBuilder()
 export async function execute(interaction) {
   const sub = interaction.options.getSubcommand();
   const guildId = interaction.guildId;
+
+  // 登録/削除は「サーバー管理」権限を持つ人のみ (list は全員可)
+  if (sub === "add" || sub === "remove") {
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({
+        content: "この操作には「サーバー管理」権限が必要です。",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+  }
 
   if (sub === "add") {
     const word = interaction.options.getString("word");
