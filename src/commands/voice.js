@@ -9,7 +9,7 @@ import { resolveUserVoice } from "../userVoice.js";
 
 export const data = new SlashCommandBuilder()
   .setName("voice")
-  .setDescription("自分の読み上げ話者と速度を設定します")
+  .setDescription("自分の読み上げ話者・速度・声の高さ・抑揚を設定します")
   .addIntegerOption((o) =>
     o
       .setName("speaker")
@@ -23,6 +23,20 @@ export const data = new SlashCommandBuilder()
       .setMinValue(0.5)
       .setMaxValue(2.0)
   )
+  .addNumberOption((o) =>
+    o
+      .setName("pitch")
+      .setDescription("声の高さ (-0.15〜0.15、標準0)")
+      .setMinValue(-0.15)
+      .setMaxValue(0.15)
+  )
+  .addNumberOption((o) =>
+    o
+      .setName("intonation")
+      .setDescription("抑揚の強さ (0.0〜2.0、標準1.0)")
+      .setMinValue(0.0)
+      .setMaxValue(2.0)
+  )
   .addBooleanOption((o) =>
     o
       .setName("reset")
@@ -32,6 +46,8 @@ export const data = new SlashCommandBuilder()
 export async function execute(interaction) {
   const speaker = interaction.options.getInteger("speaker");
   const speed = interaction.options.getNumber("speed");
+  const pitch = interaction.options.getNumber("pitch");
+  const intonation = interaction.options.getNumber("intonation");
   const reset = interaction.options.getBoolean("reset");
   const userId = interaction.user.id;
 
@@ -40,19 +56,19 @@ export async function execute(interaction) {
     clearUserSettings(userId);
     const eff = await resolveUserVoice(userId, interaction.guildId);
     await interaction.reply({
-      content: `自動(ランダム割り当て)に戻しました。現在の声: 話者ID=${eff.speaker}, 速度=${eff.speed}`,
+      content: `自動(ランダム割り当て)に戻しました。現在の声: 話者ID=${eff.speaker}, 速度=${eff.speed}, 声の高さ=${eff.pitch}, 抑揚=${eff.intonation}`,
       flags: MessageFlags.Ephemeral,
     });
     return;
   }
 
   // 引数なし: 自分の実効設定を表示
-  if (speaker === null && speed === null) {
+  if (speaker === null && speed === null && pitch === null && intonation === null) {
     const s = getUserSettings(userId);
     const eff = await resolveUserVoice(userId, interaction.guildId);
     const note = s?.speaker == null ? "（自動割り当て）" : "";
     await interaction.reply({
-      content: `あなたの現在の声: 話者ID=${eff.speaker}${note}, 速度=${eff.speed}`,
+      content: `あなたの現在の声: 話者ID=${eff.speaker}${note}, 速度=${eff.speed}, 声の高さ=${eff.pitch}, 抑揚=${eff.intonation}`,
       flags: MessageFlags.Ephemeral,
     });
     return;
@@ -76,12 +92,16 @@ export async function execute(interaction) {
     patch.speaker = speaker;
   }
   if (speed !== null) patch.speed = speed;
+  if (pitch !== null) patch.pitch = pitch;
+  if (intonation !== null) patch.intonation = intonation;
 
   const updated = updateUserSettings(userId, patch);
   await interaction.reply({
     content: `あなたの声を更新しました: 話者ID=${
       updated.speaker ?? "(自動)"
-    }, 速度=${updated.speed ?? 1.0}`,
+    }, 速度=${updated.speed ?? 1.0}, 声の高さ=${updated.pitch ?? 0.0}, 抑揚=${
+      updated.intonation ?? 1.0
+    }`,
     flags: MessageFlags.Ephemeral,
   });
 }

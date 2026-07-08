@@ -14,9 +14,13 @@ import {
 } from "@discordjs/voice";
 import { synth } from "./voicevox.js";
 import { getGuildSettings } from "./store.js";
+import { logError } from "./log.js";
 
 // guildId -> { connection, player, queue, playing }
 const sessions = new Map();
+
+// 連投時にキューが無制限に伸びるのを防ぐ上限
+const MAX_QUEUE = 100;
 
 export function getSession(guildId) {
   return sessions.get(guildId);
@@ -84,6 +88,15 @@ export function leave(guildId) {
   return false;
 }
 
+// 再生中の読み上げをスキップする。all=true ならキューも空にする。
+// player.stop() で Idle イベントが発火し、drain() が次のキューを再生する。
+export function skip(guildId, all = false) {
+  const session = sessions.get(guildId);
+  if (!session) return false;
+  if (all) session.queue = [];
+  return session.player.stop();
+}
+
 // WAV Buffer を ffmpeg で Opus に変換しつつ再生 (volume: 0.0〜1.0、デフォルト 1.0)
 function wavToResource(wav, volume = 1.0) {
   const args = [
@@ -116,12 +129,18 @@ async function drain(guildId) {
       wav = readFileSync(next.path);
       volume = next.volume ?? 1.0;
     } else {
-      const { speaker, speed } = next.voice ?? getGuildSettings(guildId);
-      wav = await synth(next.text, speaker, speed);
+      const { speaker, speed, pitch, intonation } =
+        next.voice ?? getGuildSettings(guildId);
+      wav = await synth(next.text, speaker, {
+        speedScale: speed,
+        pitchScale: pitch,
+        intonationScale: intonation,
+      });
     }
     session.player.play(wavToResource(wav, volume));
   } catch (err) {
-    console.error("play error:", err);
+    // 合成/再生に失敗した1件だけスキップして次のキューへ進む (VOICEVOX一時不通などで全体を止めない)
+    logError(`再生に失敗したためスキップします (guild: ${guildId})`, err);
     session.playing = false;
     drain(guildId);
   }
@@ -130,6 +149,7 @@ async function drain(guildId) {
 export function enqueue(guildId, text, voice) {
   const session = sessions.get(guildId);
   if (!session || !text) return;
+  if (session.queue.length >= MAX_QUEUE) return;
   session.queue.push({ kind: "tts", text, voice });
   drain(guildId);
 }
@@ -137,6 +157,7 @@ export function enqueue(guildId, text, voice) {
 export function enqueueFile(guildId, path, volume = 1.0) {
   const session = sessions.get(guildId);
   if (!session || !path) return;
+  if (session.queue.length >= MAX_QUEUE) return;
   session.queue.push({ kind: "file", path, volume });
   drain(guildId);
 }

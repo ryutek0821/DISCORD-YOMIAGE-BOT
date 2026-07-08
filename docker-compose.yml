@@ -5,3 +5,18 @@ services:
     ports:
       - "50021:50021"
     restart: unless-stopped
+
+  bot:
+    build: .
+    container_name: yomiage_bot
+    env_file: .env
+    environment:
+      # コンテナ間通信ではサービス名で VOICEVOX に到達する (.env の localhost を上書き)
+      VOICEVOX_URL: http://voicevox_engine:50021
+    volumes:
+      # data/*.json (話者・辞書設定) を永続化
+      - ./data:/app/data
+    # 起動順を保証 (VOICEVOX が一時的に未応答でも Bot 側でフォールバックする)
+    depends_on:
+      - voicevox_engine
+    restart: unless-stopped

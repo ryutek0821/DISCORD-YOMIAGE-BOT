@@ -2,9 +2,9 @@ import "dotenv/config";
 import { Client, GatewayIntentBits, Events } from "discord.js";
 import { commandMap } from "./commands/index.js";
 import { getSession, enqueue, enqueueFile, leave, join } from "./player.js";
-import { getGuildSettings, updateGuildSettings } from "./store.js";
+import { getGuildSettings, updateGuildSettings, getUserDict } from "./store.js";
 import { buildSpeech, applyDictionary } from "./textProcessor.js";
-import { isAlive } from "./voicevox.js";
+import { isAlive, importUserDict } from "./voicevox.js";
 import { resolveUserVoice } from "./userVoice.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join as pathJoin } from "node:path";
@@ -46,8 +46,56 @@ client.once(Events.ClientReady, async (c) => {
     console.warn(
       "VOICEVOX Engine に接続できません。docker compose up -d で起動してください。"
     );
+  } else {
+    await syncUserDict(); // engine コンテナ再作成で消えたユーザー辞書を復元
   }
+  await rejoinActiveChannels(c); // 再起動で消えたセッションを復帰
 });
+
+// VOICEVOX の user_dict はコンテナに永続化されないため、起動のたびに
+// data/userDict.json の内容を engine へ再投入する (uuid はそのまま使うので重複登録にはならない)。
+async function syncUserDict() {
+  try {
+    const entries = getUserDict();
+    if (entries.length === 0) return;
+    await importUserDict(entries);
+    console.log(`ユーザー辞書を復元しました (${entries.length}件)`);
+  } catch (err) {
+    console.error("ユーザー辞書の復元に失敗:", err);
+  }
+}
+
+// 再起動で in-memory のセッションが消えるため、起動時に入り直す。
+// Discord 上は幽霊接続として残るが新プロセスにはセッションが無く読み上げできないため。
+async function rejoinActiveChannels(c) {
+  for (const guild of c.guilds.cache.values()) {
+    try {
+      const me =
+        guild.members.me ?? (await guild.members.fetchMe().catch(() => null));
+      // 1) 再起動前にいた VC (幽霊接続) を最優先で復帰
+      let target = me?.voice?.channel ?? null;
+      // 2) 幽霊が無ければ、READ_CHANNELS 設定済みギルドに限り人のいる VC へ入る
+      if (!target && readChannels.has(guild.id)) {
+        target =
+          guild.channels.cache.find(
+            (ch) => ch.isVoiceBased?.() && ch.members.some((m) => !m.user.bot)
+          ) ?? null;
+      }
+      if (!target) continue;
+      if (target.members.filter((m) => !m.user.bot).size === 0) continue; // 人がいなければ入らない
+
+      await join(target);
+      // 読み上げ対象chは既存設定を維持 (/join や前回参加で決まった値を尊重)、未設定なら READ_CHANNELS
+      const current = getGuildSettings(guild.id).channelId;
+      updateGuildSettings(guild.id, {
+        channelId: current ?? readChannels.get(guild.id) ?? null,
+      });
+      console.log(`起動時の自動再入室: ${guild.name} / ${target.name}`);
+    } catch (err) {
+      console.error("起動時の自動再入室に失敗:", err);
+    }
+  }
+}
 
 client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isChatInputCommand()) return;

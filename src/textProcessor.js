@@ -47,6 +47,22 @@ export function buildSpeech(message, guildId) {
     text = "添付ファイル";
   }
 
+  // スポイラー (||text||) は中身を読み上げず省略する
+  text = text.replace(/\|\|[\s\S]*?\|\|/g, " ネタバレ省略 ");
+
+  // Markdown 装飾記号を除去 (中身は読み上げる)
+  text = text.replace(/\*\*(.+?)\*\*/gs, "$1"); // 太字
+  text = text.replace(/__(.+?)__/gs, "$1"); // 下線
+  text = text.replace(/~~(.+?)~~/gs, "$1"); // 打ち消し線
+  text = text.replace(/\*(.+?)\*/gs, "$1"); // 斜体 (*)
+  text = text.replace(/_(.+?)_/gs, "$1"); // 斜体 (_)
+  text = text.replace(/^#{1,6}\s+/gm, ""); // 見出し
+  text = text.replace(/^>\s?/gm, ""); // 引用
+  text = text.replace(/^-\s+/gm, ""); // 箇条書き
+
+  // 文末/単独の「w」連続 (草) を「笑」に変換。英単語中の ww は誤爆防止のため対象外
+  text = text.replace(/(?<![A-Za-zＡ-Ｚａ-ｚ])[wｗ]{2,}(?![A-Za-zＡ-Ｚａ-ｚ])/g, "笑");
+
   // 辞書による読み替え
   text = applyDictionary(text, guildId);
 
