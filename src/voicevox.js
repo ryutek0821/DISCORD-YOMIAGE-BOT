@@ -10,25 +10,42 @@ function sleep(ms) {
 // 4xx (リクエスト自体の問題) はリトライしても無駄なので即座に諦める。
 const RETRY_BACKOFF_MS = [200, 400];
 
-async function request(path, { method = "GET", body, headers } = {}) {
-  const maxAttempts = 1 + RETRY_BACKOFF_MS.length;
+// Engine が TCP は生きたまま応答を返さなくなると fetch は永久に待つ。
+// そうなると drain() が playing=true のまま止まり、そのギルドのキューが二度と流れないため、
+// 必ず上限を設ける (CPU 合成が遅い環境でも足りるよう長めに取る)。
+const REQUEST_TIMEOUT_MS = 30_000;
+
+async function request(
+  path,
+  { method = "GET", body, headers, retry = true, timeoutMs = REQUEST_TIMEOUT_MS } = {}
+) {
+  const backoffs = retry ? RETRY_BACKOFF_MS : [];
+  const maxAttempts = 1 + backoffs.length;
   let lastErr;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const res = await fetch(`${BASE_URL}${path}`, { method, body, headers });
+      const res = await fetch(`${BASE_URL}${path}`, {
+        method,
+        body,
+        headers,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
       if (res.ok) return res;
       const text = await res.text().catch(() => "");
       lastErr = new Error(`VOICEVOX ${method} ${path} -> ${res.status} ${text}`);
       if (res.status < 500) break; // クライアントエラーはリトライ対象外
     } catch (err) {
       lastErr = err;
+      // タイムアウトした = Engine が応答不能。同じ待ち時間で再試行しても無駄に
+      // キューを止めるだけなので即座に諦める (リトライすると最大3倍待たされる)。
+      if (err?.name === "TimeoutError") break;
     }
     if (attempt < maxAttempts) {
       logError(
-        `VOICEVOX ${method} ${path} に失敗、${RETRY_BACKOFF_MS[attempt - 1]}ms後にリトライ (${attempt}/${maxAttempts})`,
+        `VOICEVOX ${method} ${path} に失敗、${backoffs[attempt - 1]}ms後にリトライ (${attempt}/${maxAttempts})`,
         lastErr
       );
-      await sleep(RETRY_BACKOFF_MS[attempt - 1]);
+      await sleep(backoffs[attempt - 1]);
     }
   }
   throw lastErr;
@@ -101,7 +118,8 @@ export async function synth(
 
 export async function isAlive() {
   try {
-    await request("/version");
+    // 起動時の疎通確認なので短く1回だけ。落ちていることを知るのにリトライは要らない。
+    await request("/version", { timeoutMs: 5_000, retry: false });
     return true;
   } catch {
     return false;
@@ -149,7 +167,12 @@ export async function addUserDictWord(surface, pronunciation, accentType = 0, pr
     accent_type: String(accentType),
     priority: String(priority),
   });
-  const res = await request(`/user_dict_word?${qs}`, { method: "POST" });
+  // 単語登録は冪等ではない。5xx を返しつつ実際には登録済みというケースでリトライすると
+  // 別 uuid で二重登録されてしまうため、この POST だけはリトライしない。
+  const res = await request(`/user_dict_word?${qs}`, {
+    method: "POST",
+    retry: false,
+  });
   return res.json(); // uuid 文字列
 }
 
