@@ -26,13 +26,18 @@ export const data = new SlashCommandBuilder()
           .setName("add")
           .setDescription("読み替えを登録します")
           .addStringOption((o) =>
-            o.setName("word").setDescription("対象の語").setRequired(true)
+            o
+              .setName("word")
+              .setDescription("対象の語")
+              .setRequired(true)
+              .setMaxLength(100)
           )
           .addStringOption((o) =>
             o
               .setName("reading")
               .setDescription("読み (ひらがな/カタカナ推奨)")
               .setRequired(true)
+              .setMaxLength(200)
           )
       )
       .addSubcommand((s) =>
@@ -56,13 +61,18 @@ export const data = new SlashCommandBuilder()
           .setName("add")
           .setDescription("VOICEVOXのユーザー辞書に単語を登録します")
           .addStringOption((o) =>
-            o.setName("word").setDescription("対象の語").setRequired(true)
+            o
+              .setName("word")
+              .setDescription("対象の語")
+              .setRequired(true)
+              .setMaxLength(100)
           )
           .addStringOption((o) =>
             o
               .setName("reading")
               .setDescription("読み (ひらがな/カタカナのみ)")
               .setRequired(true)
+              .setMaxLength(200)
           )
           .addIntegerOption((o) =>
             o
@@ -86,11 +96,17 @@ export const data = new SlashCommandBuilder()
 
 // Discord のメッセージ上限 (2000字) を超えると reply が失敗するため、
 // 登録件数が増えても壊れないよう分割して送る。
+const CHUNK_LIMIT = 1900;
+
 async function replyLines(interaction, lines) {
   const chunks = [];
   let buf = "";
-  for (const line of lines) {
-    if (buf && buf.length + line.length + 1 > 1900) {
+  for (const raw of lines) {
+    // 1行だけで上限を超えるエントリ (過去に登録された長大な語) は切り詰める。
+    // これをしないと、その1行を含むチャンクが 2000 字を超えて reply が失敗する。
+    const line =
+      raw.length > CHUNK_LIMIT ? `${raw.slice(0, CHUNK_LIMIT - 1)}…` : raw;
+    if (buf && buf.length + line.length + 1 > CHUNK_LIMIT) {
       chunks.push(buf);
       buf = "";
     }
