@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { Client, GatewayIntentBits, Events } from "discord.js";
+import { Client, GatewayIntentBits, Events, MessageFlags } from "discord.js";
 import { commandMap } from "./commands/index.js";
 import { getSession, enqueue, enqueueFile, leave, join } from "./player.js";
 import { getGuildSettings, updateGuildSettings, getUserDict } from "./store.js";
@@ -105,11 +105,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
     await command.execute(interaction);
   } catch (err) {
     console.error(`コマンド ${interaction.commandName} でエラー:`, err);
-    const msg = { content: "コマンド実行中にエラーが発生しました。", flags: 64 };
-    if (interaction.deferred || interaction.replied) {
-      await interaction.followUp(msg).catch(() => {});
+    const content = "コマンド実行中にエラーが発生しました。";
+    if (interaction.deferred && !interaction.replied) {
+      // defer 済みで未応答の場合は editReply でないと「考え中…」のまま残ってしまう
+      await interaction.editReply({ content }).catch(() => {});
+    } else if (interaction.replied) {
+      await interaction.followUp({ content, flags: MessageFlags.Ephemeral }).catch(() => {});
     } else {
-      await interaction.reply(msg).catch(() => {});
+      await interaction.reply({ content, flags: MessageFlags.Ephemeral }).catch(() => {});
     }
   }
 });
@@ -168,9 +171,11 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
     else if (wentOut) enqueue(guildId, `${name}が退出しました`);
   }
 
-  // Bot のいる VC が Bot だけになったら自動退出
+  // Bot のいる VC が Bot だけになったら自動退出。
+  // 退出があったchが Bot のいるchかを必ず確認する (確認しないと、Bot が VC-A で読み上げ中に
+  // 無関係な VC-B から最後の1人が抜けただけで VC-A から蹴り出されてしまう)。
   const left = oldState.channel;
-  if (left && getSession(guildId)) {
+  if (left && botChannelId && left.id === botChannelId && getSession(guildId)) {
     const humans = left.members.filter((m) => !m.user.bot).size;
     if (humans === 0) leave(guildId);
   }
