@@ -51,14 +51,17 @@ export async function execute(interaction) {
   const reset = interaction.options.getBoolean("reset");
   const userId = interaction.user.id;
 
+  // どの分岐も VOICEVOX への問い合わせ (話者一覧) を挟みうる。Engine の応答が遅いと
+  // 3秒の一次応答期限を超えて interaction が失効するため、先に defer しておく。
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
   // 設定をリセットして自動(ランダム割り当て)に戻す
   if (reset) {
     clearUserSettings(userId);
     const eff = await resolveUserVoice(userId, interaction.guildId);
-    await interaction.reply({
-      content: `自動(ランダム割り当て)に戻しました。現在の声: 話者ID=${eff.speaker}, 速度=${eff.speed}, 声の高さ=${eff.pitch}, 抑揚=${eff.intonation}`,
-      flags: MessageFlags.Ephemeral,
-    });
+    await interaction.editReply(
+      `自動(ランダム割り当て)に戻しました。現在の声: 話者ID=${eff.speaker}, 速度=${eff.speed}, 声の高さ=${eff.pitch}, 抑揚=${eff.intonation}`
+    );
     return;
   }
 
@@ -67,10 +70,9 @@ export async function execute(interaction) {
     const s = getUserSettings(userId);
     const eff = await resolveUserVoice(userId, interaction.guildId);
     const note = s?.speaker == null ? "（自動割り当て）" : "";
-    await interaction.reply({
-      content: `あなたの現在の声: 話者ID=${eff.speaker}${note}, 速度=${eff.speed}, 声の高さ=${eff.pitch}, 抑揚=${eff.intonation}`,
-      flags: MessageFlags.Ephemeral,
-    });
+    await interaction.editReply(
+      `あなたの現在の声: 話者ID=${eff.speaker}${note}, 速度=${eff.speed}, 声の高さ=${eff.pitch}, 抑揚=${eff.intonation}`
+    );
     return;
   }
 
@@ -80,10 +82,9 @@ export async function execute(interaction) {
     try {
       const ids = await getSpeakerIds();
       if (!ids.includes(speaker)) {
-        await interaction.reply({
-          content: `話者ID ${speaker} は存在しません。/speakers で確認してください。`,
-          flags: MessageFlags.Ephemeral,
-        });
+        await interaction.editReply(
+          `話者ID ${speaker} は存在しません。/speakers で確認してください。`
+        );
         return;
       }
     } catch {
@@ -96,12 +97,11 @@ export async function execute(interaction) {
   if (intonation !== null) patch.intonation = intonation;
 
   const updated = updateUserSettings(userId, patch);
-  await interaction.reply({
-    content: `あなたの声を更新しました: 話者ID=${
+  await interaction.editReply(
+    `あなたの声を更新しました: 話者ID=${
       updated.speaker ?? "(自動)"
     }, 速度=${updated.speed ?? 1.0}, 声の高さ=${updated.pitch ?? 0.0}, 抑揚=${
       updated.intonation ?? 1.0
-    }`,
-    flags: MessageFlags.Ephemeral,
-  });
+    }`
+  );
 }

@@ -19,7 +19,7 @@ export async function execute(interaction) {
     const chunks = [];
     let buf = "";
     for (const line of lines) {
-      if (buf.length + line.length + 1 > 1900) {
+      if (buf && buf.length + line.length + 1 > 1900) {
         chunks.push(buf);
         buf = "";
       }

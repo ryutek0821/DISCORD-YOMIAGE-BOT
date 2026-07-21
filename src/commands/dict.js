@@ -84,6 +84,32 @@ export const data = new SlashCommandBuilder()
       )
   );
 
+// Discord のメッセージ上限 (2000字) を超えると reply が失敗するため、
+// 登録件数が増えても壊れないよう分割して送る。
+async function replyLines(interaction, lines) {
+  const chunks = [];
+  let buf = "";
+  for (const line of lines) {
+    if (buf && buf.length + line.length + 1 > 1900) {
+      chunks.push(buf);
+      buf = "";
+    }
+    buf += line + "\n";
+  }
+  if (buf) chunks.push(buf);
+
+  await interaction.reply({
+    content: chunks[0],
+    flags: MessageFlags.Ephemeral,
+  });
+  for (let i = 1; i < chunks.length; i++) {
+    await interaction.followUp({
+      content: chunks[i],
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+}
+
 export async function execute(interaction) {
   const group = interaction.options.getSubcommandGroup();
   const sub = interaction.options.getSubcommand();
@@ -141,8 +167,10 @@ async function executeReplace(interaction, sub, guildId) {
     });
     return;
   }
-  const body = list.map((e) => `「${e.word}」→「${e.reading}」`).join("\n");
-  await interaction.reply({ content: body, flags: MessageFlags.Ephemeral });
+  await replyLines(
+    interaction,
+    list.map((e) => `「${e.word}」→「${e.reading}」`)
+  );
 }
 
 // VOICEVOX ユーザー辞書 (単語+読みの正式登録)。全サーバー共通で保存する。
@@ -220,8 +248,8 @@ async function executeWord(interaction, sub) {
     });
     return;
   }
-  const body = list
-    .map((e) => `「${e.word}」→「${e.reading}」(アクセント型: ${e.accent ?? 0})`)
-    .join("\n");
-  await interaction.reply({ content: body, flags: MessageFlags.Ephemeral });
+  await replyLines(
+    interaction,
+    list.map((e) => `「${e.word}」→「${e.reading}」(アクセント型: ${e.accent ?? 0})`)
+  );
 }
