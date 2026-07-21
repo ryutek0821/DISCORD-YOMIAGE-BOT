@@ -1,6 +1,13 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import {
+  readFileSync,
+  writeFileSync,
+  renameSync,
+  mkdirSync,
+  existsSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { logError } from "./log.js";
 
 const dataDir = join(dirname(fileURLToPath(import.meta.url)), "..", "data");
 const settingsPath = join(dataDir, "guildSettings.json");
@@ -14,7 +21,9 @@ function load(path, fallback = {}) {
   if (!existsSync(path)) return fallback;
   try {
     return JSON.parse(readFileSync(path, "utf8"));
-  } catch {
+  } catch (err) {
+    // 黙って fallback に落ちると設定が消えたことに気付けないので必ずログに残す
+    logError(`${path} を読めなかったため既定値で起動します`, err);
     return fallback;
   }
 }
@@ -28,9 +37,14 @@ let dictionary = load(dictPath); // { [guildId]: [{ word, reading }] }
 let userSettings = load(userSettingsPath); // 全サーバー共通 { [userId]: { speaker?, speed? } }
 let userDict = load(userDictPath, []); // 全サーバー共通 [{ uuid, word, reading, accent }] (VOICEVOX ユーザー辞書)
 
+// 直接上書きすると書き込み途中の停止で JSON が壊れ、次回起動時に load() が
+// 黙って fallback に落ちて設定が丸ごと消える。一時ファイルへ書いてから
+// 同一ディレクトリ内で rename することで、壊れた中間状態を残さない。
 function save(path, obj) {
   ensureDir();
-  writeFileSync(path, JSON.stringify(obj, null, 2));
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, JSON.stringify(obj, null, 2));
+  renameSync(tmp, path);
 }
 
 export function getGuildSettings(guildId) {
