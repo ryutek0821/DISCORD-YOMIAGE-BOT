@@ -220,10 +220,11 @@ async function drain(guildId) {
 
 export function enqueue(guildId, text, voice) {
   const session = sessions.get(guildId);
-  if (!session || !text) return;
-  if (session.queue.length >= MAX_QUEUE) return;
+  if (!session || !text) return false;
+  if (session.queue.length >= MAX_QUEUE) return false;
   session.queue.push({ kind: "tts", text, voice });
   drain(guildId);
+  return true;
 }
 
 export function enqueueFile(guildId, path, volume = 1.0) {

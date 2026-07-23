@@ -60,7 +60,7 @@ export async function execute(interaction) {
     clearUserSettings(userId);
     const eff = await resolveUserVoice(userId, interaction.guildId);
     await interaction.editReply(
-      `自動(ランダム割り当て)に戻しました。現在の声: 話者ID=${eff.speaker}, 速度=${eff.speed}, 声の高さ=${eff.pitch}, 抑揚=${eff.intonation}`
+      `自動(ランダム割り当て)に戻し、読み上げミュートも解除しました。現在の声: 話者ID=${eff.speaker}, 速度=${eff.speed}, 声の高さ=${eff.pitch}, 抑揚=${eff.intonation}`
     );
     return;
   }

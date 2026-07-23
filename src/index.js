@@ -2,8 +2,19 @@ import "dotenv/config";
 import { Client, GatewayIntentBits, Events, MessageFlags } from "discord.js";
 import { commandMap } from "./commands/index.js";
 import { getSession, enqueue, enqueueFile, leave, join } from "./player.js";
-import { getGuildSettings, updateGuildSettings, getUserDict } from "./store.js";
-import { buildSpeech, applyDictionary } from "./textProcessor.js";
+import {
+  getGuildSettings,
+  updateGuildSettings,
+  getUserDict,
+  getReadChannelIds,
+  getIgnore,
+} from "./store.js";
+import {
+  buildSpeech,
+  applyDictionary,
+  formatAuthorName,
+} from "./textProcessor.js";
+import { isIgnoredMessage, isIgnoredMember } from "./ignoreFilter.js";
 import { isAlive, importUserDict } from "./voicevox.js";
 import { resolveUserVoice } from "./userVoice.js";
 import { fileURLToPath } from "node:url";
@@ -14,6 +25,10 @@ const SOUND_DIR = pathJoin(dirname(fileURLToPath(import.meta.url)), "..");
 const SOUND_TRIGGERS = new Map([
   ["やりますねぇ！", pathJoin(SOUND_DIR, "sound_quiet.wav")],
 ]);
+
+// guildId -> { channelId, userId, at }。発言者名 changed 判定専用の一時状態。
+const lastSpeaker = new Map();
+const AUTHOR_NAME_RESET_MS = 5 * 60_000;
 
 const { DISCORD_TOKEN } = process.env;
 if (!DISCORD_TOKEN) {
@@ -118,24 +133,58 @@ client.on(Events.InteractionCreate, async (interaction) => {
 });
 
 client.on(Events.MessageCreate, async (message) => {
-  if (!message.guild || message.author.bot) return;
-  const session = getSession(message.guild.id);
+  if (!message.guild) return;
+  const guildId = message.guild.id;
+  if (message.author.id === client.user.id) return;
+
+  // 安価で無条件なBot判定をセッション確認より先に行う。
+  if (message.author.bot && !getIgnore(guildId).readBots) return;
+
+  const session = getSession(guildId);
   if (!session) return;
-  const { channelId } = getGuildSettings(message.guild.id);
-  if (channelId && message.channelId !== channelId) return;
+  const targets = getReadChannelIds(guildId);
+  if (targets.length > 0 && !targets.includes(message.channelId)) return;
+
+  // ユーザー・個人ミュート・プレフィックスの除外は効果音判定より先。
+  if (isIgnoredMessage(message, client.user.id)) return;
 
   // 効果音トリガー (完全一致) は TTS せず WAV を再生
   const sound = SOUND_TRIGGERS.get(message.content.trim());
   if (sound) {
-    enqueueFile(message.guild.id, sound);
+    enqueueFile(guildId, sound);
     return;
   }
 
-  const text = buildSpeech(message, message.guild.id);
+  let text = buildSpeech(message, guildId);
   if (!text) return;
+
   // 発言者ごとの声で読み上げる (未設定者は userId から固定割り当て)
-  const voice = await resolveUserVoice(message.author.id, message.guild.id);
-  enqueue(message.guild.id, text, voice);
+  const voice = await resolveUserVoice(message.author.id, guildId);
+  const authorMode = getGuildSettings(guildId).readAuthorName;
+  let speakerState = null;
+  if (authorMode === "always" || authorMode === "changed") {
+    const now = Date.now();
+    const previous = lastSpeaker.get(guildId);
+    const changed =
+      !previous ||
+      previous.channelId !== message.channelId ||
+      previous.userId !== message.author.id ||
+      now - previous.at >= AUTHOR_NAME_RESET_MS;
+    if (authorMode === "always" || changed) {
+      const name = formatAuthorName(message.member, message.author, guildId);
+      text = `${name} ${text}`;
+    }
+    speakerState = {
+      channelId: message.channelId,
+      userId: message.author.id,
+      at: now,
+    };
+  }
+
+  // キュー上限などで受理されなかった発言は「最後に読み上げた発言者」に含めない。
+  if (enqueue(guildId, text, voice) && speakerState) {
+    lastSpeaker.set(guildId, speakerState);
+  }
 });
 
 client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
@@ -158,11 +207,16 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
   }
 
   const botChannelId = newState.guild.members.me?.voice?.channelId;
-  const rawName = member?.displayName ?? member?.user?.username ?? "誰か";
-  const name = applyDictionary(rawName, guildId);
-
   // Bot のいるチャンネルへの参加 / からの退出を読み上げ
-  if (botChannelId) {
+  const settings = getGuildSettings(guildId);
+  const userId = member?.user?.id;
+  if (
+    botChannelId &&
+    settings.announceVoiceState &&
+    !isIgnoredMember(guildId, userId)
+  ) {
+    const rawName = member?.displayName ?? member?.user?.username ?? "誰か";
+    const name = applyDictionary(rawName, guildId);
     const cameIn =
       newState.channelId === botChannelId && oldState.channelId !== botChannelId;
     const wentOut =

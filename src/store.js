@@ -14,8 +14,18 @@ const settingsPath = join(dataDir, "guildSettings.json");
 const dictPath = join(dataDir, "dictionary.json");
 const userSettingsPath = join(dataDir, "userSettings.json");
 const userDictPath = join(dataDir, "userDict.json");
+const ignorePath = join(dataDir, "ignore.json");
 
-const DEFAULT_SETTINGS = { speaker: 3, speed: 1.0, channelId: null };
+const DEFAULT_SETTINGS = {
+  speaker: 3,
+  speed: 1.0,
+  channelId: null,
+  readChannelIds: [],
+  announceVoiceState: true,
+  readAuthorName: "off",
+  maxLength: 50,
+};
+const DEFAULT_IGNORE = { users: [], prefixes: [], readBots: false };
 
 function load(path, fallback = {}) {
   if (!existsSync(path)) return fallback;
@@ -32,10 +42,11 @@ function ensureDir() {
   if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
 }
 
-let settings = load(settingsPath); // { [guildId]: { speaker, speed, channelId } }
+let settings = load(settingsPath); // ギルド単位の読み上げ設定
 let dictionary = load(dictPath); // { [guildId]: [{ word, reading }] }
-let userSettings = load(userSettingsPath); // 全サーバー共通 { [userId]: { speaker?, speed? } }
+let userSettings = load(userSettingsPath); // 全サーバー共通 { [userId]: { speaker?, speed?, pitch?, intonation?, mute? } }
 let userDict = load(userDictPath, []); // 全サーバー共通 [{ uuid, word, reading, accent }] (VOICEVOX ユーザー辞書)
+let ignore = load(ignorePath); // { [guildId]: { users, prefixes, readBots } }
 
 // 直接上書きすると書き込み途中の停止で JSON が壊れ、次回起動時に load() が
 // 黙って fallback に落ちて設定が丸ごと消える。一時ファイルへ書いてから
@@ -57,6 +68,16 @@ export function updateGuildSettings(guildId, patch) {
   return settings[guildId];
 }
 
+// 管理者が明示した複数chを優先し、未指定なら従来の /join 用 channelId に戻る。
+// 空配列は「チャンネル制限なし」を表す。
+export function getReadChannelIds(guildId) {
+  const current = getGuildSettings(guildId);
+  if (Array.isArray(current.readChannelIds) && current.readChannelIds.length > 0) {
+    return current.readChannelIds;
+  }
+  return current.channelId ? [current.channelId] : [];
+}
+
 export function getDictionary(guildId) {
   return dictionary[guildId] || [];
 }
@@ -76,7 +97,7 @@ export function removeDictionaryEntry(guildId, word) {
   return before.length !== after.length;
 }
 
-// 個人の話者設定 (全サーバー共通、userId 単位)。未設定なら null。
+// 個人の声・ミュート設定 (全サーバー共通、userId 単位)。未設定なら null。
 export function getUserSettings(userId) {
   return userSettings[userId] || null;
 }
@@ -92,6 +113,53 @@ export function clearUserSettings(userId) {
   delete userSettings[userId];
   save(userSettingsPath, userSettings);
   return true;
+}
+
+export function getIgnore(guildId) {
+  const current = ignore[guildId] || {};
+  return {
+    ...DEFAULT_IGNORE,
+    ...current,
+    users: Array.isArray(current.users) ? current.users : [],
+    prefixes: Array.isArray(current.prefixes) ? current.prefixes : [],
+  };
+}
+
+function updateIgnore(guildId, patch) {
+  ignore[guildId] = { ...getIgnore(guildId), ...patch };
+  save(ignorePath, ignore);
+  return ignore[guildId];
+}
+
+export function addIgnoreUser(guildId, userId) {
+  const users = [...getIgnore(guildId).users, userId];
+  updateIgnore(guildId, { users });
+  return users;
+}
+
+export function removeIgnoreUser(guildId, userId) {
+  const users = getIgnore(guildId).users.filter((id) => id !== userId);
+  updateIgnore(guildId, { users });
+  return users;
+}
+
+export function addIgnorePrefix(guildId, prefix) {
+  const prefixes = [...getIgnore(guildId).prefixes, prefix];
+  updateIgnore(guildId, { prefixes });
+  return prefixes;
+}
+
+export function removeIgnorePrefix(guildId, prefix) {
+  const normalized = prefix.toLowerCase();
+  const prefixes = getIgnore(guildId).prefixes.filter(
+    (value) => value.toLowerCase() !== normalized
+  );
+  updateIgnore(guildId, { prefixes });
+  return prefixes;
+}
+
+export function setReadBots(guildId, readBots) {
+  return updateIgnore(guildId, { readBots });
 }
 
 // VOICEVOX ユーザー辞書 (単語+読みの正式登録)。全サーバー共通、guildId では分けない。

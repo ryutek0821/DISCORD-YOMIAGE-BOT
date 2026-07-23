@@ -1,6 +1,15 @@
-import { getDictionary } from "./store.js";
+import { getDictionary, getGuildSettings } from "./store.js";
 
-const MAX_LENGTH = 50;
+const DEFAULT_MAX_LENGTH = 50;
+const AUTHOR_NAME_MAX = 20;
+
+function resolveMaxLength(guildId) {
+  const value = getGuildSettings(guildId).maxLength;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_MAX_LENGTH;
+  }
+  return Math.min(200, Math.max(10, Math.trunc(value)));
+}
 
 // サーバー辞書による読み替え (単純な全置換)
 export function applyDictionary(text, guildId) {
@@ -9,6 +18,11 @@ export function applyDictionary(text, guildId) {
     text = text.split(word).join(reading);
   }
   return text;
+}
+
+export function formatAuthorName(member, user, guildId) {
+  const rawName = member?.displayName ?? user?.username ?? "誰か";
+  return applyDictionary(rawName, guildId).slice(0, AUTHOR_NAME_MAX);
 }
 
 // 整形 -> 辞書適用 の順で読み上げ用テキストを生成する
@@ -68,8 +82,9 @@ export function buildSpeech(message, guildId) {
 
   // 連続空白を畳んで上限カット
   text = text.replace(/\s+/g, " ").trim();
-  if (text.length > MAX_LENGTH) {
-    text = text.slice(0, MAX_LENGTH) + " 以下略";
+  const maxLength = resolveMaxLength(guildId);
+  if (text.length > maxLength) {
+    text = text.slice(0, maxLength) + " 以下略";
   }
 
   return text;
