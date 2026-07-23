@@ -13,6 +13,7 @@ import {
   hiraganaToKatakana,
   isKatakana,
 } from "../voicevox.js";
+import { replyLines } from "./replyLines.js";
 
 export const data = new SlashCommandBuilder()
   .setName("dict")
@@ -93,38 +94,6 @@ export const data = new SlashCommandBuilder()
         s.setName("list").setDescription("登録済みのユーザー辞書単語を一覧表示します")
       )
   );
-
-// Discord のメッセージ上限 (2000字) を超えると reply が失敗するため、
-// 登録件数が増えても壊れないよう分割して送る。
-const CHUNK_LIMIT = 1900;
-
-async function replyLines(interaction, lines) {
-  const chunks = [];
-  let buf = "";
-  for (const raw of lines) {
-    // 1行だけで上限を超えるエントリ (過去に登録された長大な語) は切り詰める。
-    // これをしないと、その1行を含むチャンクが 2000 字を超えて reply が失敗する。
-    const line =
-      raw.length > CHUNK_LIMIT ? `${raw.slice(0, CHUNK_LIMIT - 1)}…` : raw;
-    if (buf && buf.length + line.length + 1 > CHUNK_LIMIT) {
-      chunks.push(buf);
-      buf = "";
-    }
-    buf += line + "\n";
-  }
-  if (buf) chunks.push(buf);
-
-  await interaction.reply({
-    content: chunks[0],
-    flags: MessageFlags.Ephemeral,
-  });
-  for (let i = 1; i < chunks.length; i++) {
-    await interaction.followUp({
-      content: chunks[i],
-      flags: MessageFlags.Ephemeral,
-    });
-  }
-}
 
 export async function execute(interaction) {
   const group = interaction.options.getSubcommandGroup();
