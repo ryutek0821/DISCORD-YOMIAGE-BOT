@@ -84,3 +84,10 @@ src/
 1. `src/commands/` に新ファイルを作成し `data` (SlashCommandBuilder) と `execute` をエクスポート
 2. `src/commands/index.js` の `commands` 配列に追加
 3. `npm run deploy` でコマンドを再登録
+
+## エージェント運用ルール
+
+Claude Code / Codex はこのリポジトリで PR を直接作らない。変更が必要だと判断したら
+`.github/ISSUE_TEMPLATE/agent-proposal.yml` の形式で issue を起票し、そこで止まる
+（実装・ブランチ作成・PR は人が明示的に指示してから）。
+詳細は `~/.claude/CLAUDE.md` / `~/.codex/AGENTS.md` の「GitHub 運用方針」を参照。
