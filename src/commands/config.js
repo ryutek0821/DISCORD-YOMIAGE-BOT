@@ -44,6 +44,13 @@ export const data = new SlashCommandBuilder()
           .setMinValue(10)
           .setMaxValue(200)
       )
+      .addIntegerOption((o) =>
+        o
+          .setName("fish_daily_bytes")
+          .setDescription("Fish Audio の1日あたり送信バイト上限 (0=無制限)")
+          .setMinValue(0)
+          .setMaxValue(2000000)
+      )
   )
   .addSubcommand((s) =>
     s
@@ -85,6 +92,13 @@ function effectiveMaxLength(value) {
   return Math.min(200, Math.max(10, Math.trunc(value)));
 }
 
+function formatFishLimit(value) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return "無制限";
+  }
+  return `${value} bytes/日`;
+}
+
 function formatChannel(interaction, id) {
   const channel = interaction.guild?.channels.cache.get(id);
   return channel ? `#${channel.name}` : `(削除済み: ${id})`;
@@ -108,6 +122,7 @@ function formatSettings(interaction) {
     `VC参加/退出の読み上げ: ${settings.announceVoiceState ? "ON" : "OFF"}`,
     `発言者名の読み上げ: ${AUTHOR_MODE_LABELS[settings.readAuthorName] ?? "OFF"}`,
     `最大文字数: ${effectiveMaxLength(settings.maxLength)}`,
+    `Fish Audioの日次バイト上限: ${formatFishLimit(settings.fishDailyBytes)}`,
   ].join("\n");
 }
 
@@ -139,10 +154,12 @@ export async function execute(interaction) {
     );
     const readAuthorName = interaction.options.getString("read_author_name");
     const maxLength = interaction.options.getInteger("max_length");
+    const fishDailyBytes = interaction.options.getInteger("fish_daily_bytes");
     const patch = {};
     if (announceVoiceState !== null) patch.announceVoiceState = announceVoiceState;
     if (readAuthorName !== null) patch.readAuthorName = readAuthorName;
     if (maxLength !== null) patch.maxLength = maxLength;
+    if (fishDailyBytes !== null) patch.fishDailyBytes = fishDailyBytes;
     if (Object.keys(patch).length > 0) updateGuildSettings(interaction.guildId, patch);
     await replySettings(
       interaction,
@@ -185,6 +202,7 @@ export async function execute(interaction) {
     announceVoiceState: true,
     readAuthorName: "off",
     maxLength: 50,
+    fishDailyBytes: 50000,
   });
   await replySettings(interaction, "読み上げ設定を既定値に戻しました。");
 }

@@ -1,4 +1,5 @@
 import { logError } from "./log.js";
+import { createLruCache } from "./lruCache.js";
 
 const BASE_URL = process.env.VOICEVOX_URL || "http://localhost:50021";
 
@@ -66,26 +67,9 @@ export async function getSpeakerIds() {
   return speakerIdsCache;
 }
 
-// 同一条件のテキストを再合成しないための WAV キャッシュ (挿入順 Map、上限超で最古を破棄)
-const wavCache = new Map(); // key -> Buffer
-const WAV_CACHE_MAX = 100;
-
-function cacheGet(key) {
-  if (!wavCache.has(key)) return null;
-  const value = wavCache.get(key);
-  wavCache.delete(key);
-  wavCache.set(key, value); // 使われたものを最新扱いにする (簡易 LRU)
-  return value;
-}
-
-function cacheSet(key, value) {
-  wavCache.delete(key);
-  wavCache.set(key, value);
-  if (wavCache.size > WAV_CACHE_MAX) {
-    const oldestKey = wavCache.keys().next().value;
-    wavCache.delete(oldestKey);
-  }
-}
+// 同一条件のテキストを再合成しないための WAV キャッシュ。
+// 他エンジン (Fish Audio) とは別インスタンスにして、キー空間が混ざらないようにする。
+const wavCache = createLruCache(100); // key -> Buffer
 
 // テキストを WAV (Buffer) に合成する
 export async function synth(
@@ -94,7 +78,7 @@ export async function synth(
   { speedScale = 1.0, pitchScale = 0.0, intonationScale = 1.0 } = {}
 ) {
   const cacheKey = `${speaker}:${speedScale}:${pitchScale}:${intonationScale}:${text}`;
-  const cached = cacheGet(cacheKey);
+  const cached = wavCache.get(cacheKey);
   if (cached) return cached;
 
   const queryRes = await request(
@@ -112,7 +96,7 @@ export async function synth(
     body: JSON.stringify(query),
   });
   const wav = Buffer.from(await synthRes.arrayBuffer());
-  cacheSet(cacheKey, wav);
+  wavCache.set(cacheKey, wav);
   return wav;
 }
 

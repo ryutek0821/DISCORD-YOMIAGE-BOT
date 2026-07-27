@@ -16,6 +16,7 @@ import {
 } from "./textProcessor.js";
 import { isIgnoredMessage, isIgnoredMember } from "./ignoreFilter.js";
 import { isAlive, importUserDict } from "./voicevox.js";
+import { logFishStatus } from "./tts.js";
 import { resolveUserVoice } from "./userVoice.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join as pathJoin } from "node:path";
@@ -64,6 +65,7 @@ client.once(Events.ClientReady, async (c) => {
   } else {
     await syncUserDict(); // engine コンテナ再作成で消えたユーザー辞書を復元
   }
+  logFishStatus(); // Fish Audio は任意。未設定でも VOICEVOX のみで動く
   await rejoinActiveChannels(c); // 再起動で消えたセッションを復帰
 });
 
