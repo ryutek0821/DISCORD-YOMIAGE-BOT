@@ -53,6 +53,25 @@ export const data = new SlashCommandBuilder()
       .setDescription("自分の設定を消して自動(ランダム割り当て)に戻す")
   );
 
+// 入力から Fish の reference_id を引く。見つからなければ null。
+// 登録済みボイスは全ユーザー共通なので、誰が登録したものでも誰でも指定できる。
+// /fishvoice list の表示 (「エイリアス: 表示名」) をどちらの側で打っても通るようにし、
+// 大文字小文字も無視する (add 時に alias を小文字化しているため、完全一致だと
+// `Jyounetsu` のような入力が弾かれてしまう)。
+function resolveFishInput(input) {
+  const raw = input.trim();
+  const lower = raw.toLowerCase();
+  const voices = getFishVoices();
+
+  for (const [alias, v] of Object.entries(voices)) {
+    if (alias.toLowerCase() === lower) return v.referenceId;
+  }
+  for (const v of Object.values(voices)) {
+    if (v.name.toLowerCase() === lower) return v.referenceId;
+  }
+  return isReferenceId(lower) ? lower : null;
+}
+
 // reference_id から登録名を引く (未登録の生IDならID自体を見せる)
 function describeFishRef(referenceId) {
   const entry = Object.entries(getFishVoices()).find(
@@ -142,13 +161,11 @@ export async function execute(interaction) {
       );
       return;
     }
-    // エイリアス優先。見つからなければ reference_id の直接指定として扱う。
-    const key = fish.trim();
-    const registered = getFishVoices()[key];
-    const referenceId = registered?.referenceId ?? key.toLowerCase();
-    if (!registered && !isReferenceId(referenceId)) {
+    const referenceId = resolveFishInput(fish);
+    if (!referenceId) {
+      const known = Object.keys(getFishVoices()).join(", ");
       await interaction.editReply(
-        `「${fish}」は登録済みボイスにも reference_id (32桁の16進数) にも該当しません。/fishvoice list で確認してください。`
+        `「${fish}」は登録済みボイスにも reference_id (32桁の16進数) にも該当しません。\n登録済み: ${known}`
       );
       return;
     }
