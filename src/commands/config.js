@@ -1,9 +1,4 @@
-import {
-  ChannelType,
-  MessageFlags,
-  PermissionFlagsBits,
-  SlashCommandBuilder,
-} from "discord.js";
+import { ChannelType, MessageFlags, SlashCommandBuilder } from "discord.js";
 import { getGuildSettings, updateGuildSettings } from "../store.js";
 
 const AUTHOR_MODE_LABELS = {
@@ -83,10 +78,6 @@ export const data = new SlashCommandBuilder()
     s.setName("reset").setDescription("読み上げ設定を既定値に戻します")
   );
 
-function hasManageGuild(interaction) {
-  return interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
-}
-
 function effectiveMaxLength(value) {
   if (typeof value !== "number" || !Number.isFinite(value)) return 50;
   return Math.min(200, Math.max(10, Math.trunc(value)));
@@ -133,18 +124,13 @@ async function replySettings(interaction, prefix) {
   await interaction.reply({ content, flags: MessageFlags.Ephemeral });
 }
 
+// /config は全ユーザーが変更できる (ManageGuild は要求しない)。
+// 制限したくなった場合は Discord 側の「連携サービス」設定でコマンド単位に権限を掛けるか、
+// /dict や /ignore と同じ hasManageGuild ガードをここに戻す。
 export async function execute(interaction) {
   const sub = interaction.options.getSubcommand();
   if (sub === "show") {
     await replySettings(interaction);
-    return;
-  }
-
-  if (!hasManageGuild(interaction)) {
-    await interaction.reply({
-      content: "この操作には「サーバー管理」権限が必要です。",
-      flags: MessageFlags.Ephemeral,
-    });
     return;
   }
 
