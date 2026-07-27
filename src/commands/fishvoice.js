@@ -55,12 +55,13 @@ export const data = new SlashCommandBuilder()
 export async function execute(interaction) {
   const sub = interaction.options.getSubcommand();
 
-  // 登録/削除は「サーバー管理」権限を持つ人のみ (list は全員可)。
-  // ボイス一覧は全サーバー共通なので、書き換えは管理者に限る。
-  if (sub === "add" || sub === "remove") {
+  // add と list は全員可。remove だけ「サーバー管理」権限を要求する。
+  // ボイス一覧は全サーバー共通なので、他人が登録したエントリを誰でも消せると
+  // 事故ったときに戻せない (追加は上書きで直せるが削除は元IDが分からなくなる)。
+  if (sub === "remove") {
     if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
       await interaction.reply({
-        content: "この操作には「サーバー管理」権限が必要です。",
+        content: "削除には「サーバー管理」権限が必要です。",
         flags: MessageFlags.Ephemeral,
       });
       return;
