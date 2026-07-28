@@ -1,0 +1,194 @@
+# RYU-MACBOOKPRO への手動デプロイ (Tailscale Workload Identity Federation + OpenSSH)
+#
+# 前提セットアップ (Refs #60):
+#   - GitHub: Environment `production` を作成
+#   - GitHub Secrets:
+#       TS_OAUTH_CLIENT_ID  Tailscale OIDC フェデレーション ID の clientID
+#       TS_AUDIENCE         Tailscale OIDC フェデレーション ID の audience
+#       DEPLOY_HOST         例: ryu-macbookpro.tail93b3c7.ts.net
+#       DEPLOY_USER         例: ryuheitakeda
+#       DEPLOY_SSH_KEY      Actions 専用 ed25519 秘密鍵 (~/.ssh/id_ed25519 とは別物)
+#       DEPLOY_KNOWN_HOSTS  デプロイ先のホスト鍵 (`ssh-keyscan <host>` の出力)
+#   - GitHub Variables (任意): DEPLOY_PATH  未設定なら下記の既定パスを使う
+#   - Tailscale: このリポジトリ限定の OIDC ワークロード ID (auth_keys スコープ + tag:ci)、
+#     ACL で tag:ci -> RYU-MACBOOKPRO:22 を許可
+#   - RYU-MACBOOKPRO: リモートログイン(sshd) 有効化 / authorized_keys に公開鍵追加 /
+#     Docker Desktop 起動 / 作業ツリーが main かつ clean
+
+name: Deploy to RYU-MACBOOKPRO
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy_commands:
+        description: 'スラッシュコマンドを Discord に再登録する (npm run deploy)'
+        type: boolean
+        default: false
+
+# push / pull_request からは絶対に起動しない。同時デプロイも許可しない。
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # Tailscale の workload identity federation が GitHub の JWT を取得するのに必要
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 30
+
+    steps:
+      - name: 事前チェック (ブランチ / Secrets)
+        env:
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_AUDIENCE: ${{ secrets.TS_AUDIENCE }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+
+          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "::error::main ブランチからのみデプロイできます (実行ブランチ: ${GITHUB_REF})"
+            exit 1
+          fi
+
+          missing=0
+          for name in TS_OAUTH_CLIENT_ID TS_AUDIENCE DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Secret ${name} が未設定です"
+              missing=1
+            fi
+          done
+          [ "${missing}" -eq 0 ] || exit 1
+
+          echo "デプロイ対象コミット: ${GITHUB_SHA}"
+          echo "スラッシュコマンド再登録: ${{ inputs.deploy_commands }}"
+
+      - name: Tailscale に接続
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          audience: ${{ secrets.TS_AUDIENCE }}
+          tags: tag:ci
+          version: latest
+          # tailnet へのピア情報伝播は結果整合。SSH の前に到達性を確認しておく。
+          ping: ${{ secrets.DEPLOY_HOST }}
+
+      - name: SSH 鍵と known_hosts を配置
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${DEPLOY_SSH_KEY}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "${DEPLOY_KNOWN_HOSTS}" > ~/.ssh/deploy_known_hosts
+          chmod 600 ~/.ssh/deploy_known_hosts
+
+      - name: リモートでデプロイを実行
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/Users/ryuheitakeda/ClaudeCode/DISCORD-YOMIAGE-BOT' }}
+          DEPLOY_COMMANDS: ${{ inputs.deploy_commands }}
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # 値はリモートのシェルに渡るのでクォートしてから埋め込む
+          remote_env="DEPLOY_PATH=$(printf '%q' "${DEPLOY_PATH}")"
+          remote_env="${remote_env} DEPLOY_COMMANDS=$(printf '%q' "${DEPLOY_COMMANDS}")"
+          remote_env="${remote_env} EXPECTED_SHA=$(printf '%q' "${EXPECTED_SHA}")"
+
+          ssh \
+            -i ~/.ssh/deploy_key \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="${HOME}/.ssh/deploy_known_hosts" \
+            -o ConnectTimeout=30 \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "${remote_env} bash -s" <<'REMOTE_SCRIPT'
+          set -euo pipefail
+
+          # 非対話 SSH は PATH が最小限なので Docker Desktop / Homebrew の場所を足す
+          export PATH="/usr/local/bin:/opt/homebrew/bin:${HOME}/.docker/bin:${PATH}"
+
+          echo "==> デプロイ先: ${DEPLOY_PATH}"
+          cd "${DEPLOY_PATH}"
+
+          command -v docker >/dev/null 2>&1 || {
+            echo "docker が PATH 上に見つかりません" >&2
+            exit 1
+          }
+          docker info >/dev/null 2>&1 || {
+            echo "docker デーモンに接続できません (Docker Desktop が未起動の可能性)" >&2
+            exit 1
+          }
+
+          # --- リモート側ガード: 意図しないコードを本番に流さない ---
+          branch="$(git rev-parse --abbrev-ref HEAD)"
+          if [ "${branch}" != "main" ]; then
+            echo "作業ツリーが main ではありません (現在: ${branch})。中止します。" >&2
+            exit 1
+          fi
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "作業ツリーが dirty です。中止します。" >&2
+            git status --short >&2
+            exit 1
+          fi
+
+          before="$(git rev-parse HEAD)"
+          echo "==> git pull --ff-only origin main"
+          git pull --ff-only origin main
+          after="$(git rev-parse HEAD)"
+          echo "    ${before} -> ${after}"
+
+          if [ "${after}" != "${EXPECTED_SHA}" ]; then
+            echo "警告: 取得した HEAD (${after}) が workflow 実行時の main (${EXPECTED_SHA}) と一致しません" >&2
+          fi
+
+          echo "==> docker compose up -d --build bot"
+          docker compose up -d --build bot
+
+          if [ "${DEPLOY_COMMANDS}" = "true" ]; then
+            echo "==> docker compose run --rm bot npm run deploy"
+            docker compose run --rm bot npm run deploy
+          else
+            echo "==> スラッシュコマンドの再登録はスキップ (deploy_commands=false)"
+          fi
+
+          echo "==> docker compose ps"
+          docker compose ps
+
+          # 起動確認: bot / voicevox_engine が running であること
+          sleep 5
+          failed=0
+          for svc in voicevox_engine bot; do
+            cid="$(docker compose ps -q "${svc}" || true)"
+            if [ -z "${cid}" ]; then
+              echo "${svc}: コンテナが見つかりません" >&2
+              failed=1
+              continue
+            fi
+            state="$(docker inspect -f '{{.State.Status}}' "${cid}")"
+            echo "${svc}: ${state}"
+            if [ "${state}" != "running" ]; then
+              docker compose logs --tail 50 "${svc}" >&2 || true
+              failed=1
+            fi
+          done
+          exit "${failed}"
+          REMOTE_SCRIPT
+
+      - name: SSH 鍵を破棄
+        if: always()
+        run: rm -f ~/.ssh/deploy_key ~/.ssh/deploy_known_hosts
