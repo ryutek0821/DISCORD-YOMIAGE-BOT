@@ -41,6 +41,16 @@ export function isReferenceId(value) {
   return /^[0-9a-f]{32}$/.test(value);
 }
 
+// fish.audio のモデルURL (https://fish.audio/ja/m/<id>) か生の reference_id から
+// ID を取り出す。見つからなければ null。
+export function parseReferenceId(input) {
+  const raw = String(input ?? "").trim();
+  const fromUrl = raw.match(/\/m\/([0-9a-fA-F]{32})/);
+  if (fromUrl) return fromUrl[1].toLowerCase();
+  if (/^[0-9a-fA-F]{32}$/.test(raw)) return raw.toLowerCase();
+  return null;
+}
+
 async function request(path, { method = "POST", body, headers } = {}) {
   const maxAttempts = 1 + RETRY_BACKOFF_MS.length;
   let lastErr;
@@ -58,6 +68,7 @@ async function request(path, { method = "POST", body, headers } = {}) {
       if (res.ok) return res;
       const text = await res.text().catch(() => "");
       lastErr = new Error(`Fish Audio ${method} ${path} -> ${res.status} ${text}`);
+      lastErr.status = res.status; // 呼び出し側が 404 とそれ以外を区別できるように
       if (res.status < 500) break; // 401/402/422 等はリトライしても同じ
     } catch (err) {
       lastErr = err;
@@ -72,6 +83,24 @@ async function request(path, { method = "POST", body, headers } = {}) {
     }
   }
   throw lastErr;
+}
+
+// モデル情報を引く。存在しなければ null、通信不能などは throw。
+// 他人のアカウントのモデルでも public / unlist なら取得できる。
+export async function getModelInfo(referenceId) {
+  try {
+    const res = await request(`/model/${referenceId}`, { method: "GET" });
+    const m = await res.json();
+    return {
+      title: m.title ?? "",
+      visibility: m.visibility ?? "",
+      author: m.author?.nickname ?? "",
+      languages: m.languages ?? [],
+    };
+  } catch (err) {
+    if (err?.status === 404) return null;
+    throw err;
+  }
 }
 
 const wavCache = createLruCache(100); // key -> Buffer
