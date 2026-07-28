@@ -1,9 +1,4 @@
-import {
-  ChannelType,
-  MessageFlags,
-  PermissionFlagsBits,
-  SlashCommandBuilder,
-} from "discord.js";
+import { ChannelType, MessageFlags, SlashCommandBuilder } from "discord.js";
 import { getGuildSettings, updateGuildSettings } from "../store.js";
 
 const AUTHOR_MODE_LABELS = {
@@ -44,6 +39,13 @@ export const data = new SlashCommandBuilder()
           .setMinValue(10)
           .setMaxValue(200)
       )
+      .addIntegerOption((o) =>
+        o
+          .setName("fish_daily_bytes")
+          .setDescription("Fish Audio の1日あたり送信バイト上限 (0=無制限)")
+          .setMinValue(0)
+          .setMaxValue(2000000)
+      )
   )
   .addSubcommand((s) =>
     s
@@ -76,13 +78,16 @@ export const data = new SlashCommandBuilder()
     s.setName("reset").setDescription("読み上げ設定を既定値に戻します")
   );
 
-function hasManageGuild(interaction) {
-  return interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
-}
-
 function effectiveMaxLength(value) {
   if (typeof value !== "number" || !Number.isFinite(value)) return 50;
   return Math.min(200, Math.max(10, Math.trunc(value)));
+}
+
+function formatFishLimit(value) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return "無制限";
+  }
+  return `${value} bytes/日`;
 }
 
 function formatChannel(interaction, id) {
@@ -108,6 +113,7 @@ function formatSettings(interaction) {
     `VC参加/退出の読み上げ: ${settings.announceVoiceState ? "ON" : "OFF"}`,
     `発言者名の読み上げ: ${AUTHOR_MODE_LABELS[settings.readAuthorName] ?? "OFF"}`,
     `最大文字数: ${effectiveMaxLength(settings.maxLength)}`,
+    `Fish Audioの日次バイト上限: ${formatFishLimit(settings.fishDailyBytes)}`,
   ].join("\n");
 }
 
@@ -118,18 +124,13 @@ async function replySettings(interaction, prefix) {
   await interaction.reply({ content, flags: MessageFlags.Ephemeral });
 }
 
+// /config は全ユーザーが変更できる (ManageGuild は要求しない)。
+// 制限したくなった場合は Discord 側の「連携サービス」設定でコマンド単位に権限を掛けるか、
+// /dict や /ignore と同じ hasManageGuild ガードをここに戻す。
 export async function execute(interaction) {
   const sub = interaction.options.getSubcommand();
   if (sub === "show") {
     await replySettings(interaction);
-    return;
-  }
-
-  if (!hasManageGuild(interaction)) {
-    await interaction.reply({
-      content: "この操作には「サーバー管理」権限が必要です。",
-      flags: MessageFlags.Ephemeral,
-    });
     return;
   }
 
@@ -139,10 +140,12 @@ export async function execute(interaction) {
     );
     const readAuthorName = interaction.options.getString("read_author_name");
     const maxLength = interaction.options.getInteger("max_length");
+    const fishDailyBytes = interaction.options.getInteger("fish_daily_bytes");
     const patch = {};
     if (announceVoiceState !== null) patch.announceVoiceState = announceVoiceState;
     if (readAuthorName !== null) patch.readAuthorName = readAuthorName;
     if (maxLength !== null) patch.maxLength = maxLength;
+    if (fishDailyBytes !== null) patch.fishDailyBytes = fishDailyBytes;
     if (Object.keys(patch).length > 0) updateGuildSettings(interaction.guildId, patch);
     await replySettings(
       interaction,
@@ -185,6 +188,7 @@ export async function execute(interaction) {
     announceVoiceState: true,
     readAuthorName: "off",
     maxLength: 50,
+    fishDailyBytes: 50000,
   });
   await replySettings(interaction, "読み上げ設定を既定値に戻しました。");
 }

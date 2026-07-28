@@ -12,7 +12,7 @@ import {
   entersState,
   getVoiceConnection,
 } from "@discordjs/voice";
-import { synth } from "./voicevox.js";
+import { synthVoice } from "./tts.js";
 import { getGuildSettings } from "./store.js";
 import { logError } from "./log.js";
 
@@ -162,8 +162,9 @@ export function skip(guildId, all = false) {
   return session.player.stop();
 }
 
-// WAV Buffer を ffmpeg で Opus に変換しつつ再生 (volume: 0.0〜1.0、デフォルト 1.0)
-function wavToResource(wav, volume = 1.0) {
+// 音声 Buffer を ffmpeg で Opus に変換しつつ再生 (volume: 0.0〜1.0、デフォルト 1.0)。
+// 入力フォーマットは指定せず ffmpeg の自動判別に任せる (現状はどのエンジンも WAV)。
+function audioToResource(audio, volume = 1.0) {
   const args = [
     "-i", "pipe:0",
     "-analyzeduration", "0",
@@ -182,7 +183,7 @@ function wavToResource(wav, volume = 1.0) {
     logError("ffmpeg の起動に失敗しました", err);
     ff.stdout.destroy();
   });
-  Readable.from(wav).pipe(ff.stdin);
+  Readable.from(audio).pipe(ff.stdin);
   ff.stdin.on("error", () => {});
   return createAudioResource(ff.stdout, { inputType: StreamType.Raw });
 }
@@ -195,23 +196,21 @@ async function drain(guildId) {
 
   session.playing = true;
   try {
-    let wav;
+    let audio;
     let volume = 1.0;
     if (next.kind === "file") {
-      wav = readFileSync(next.path);
+      audio = readFileSync(next.path);
       volume = next.volume ?? 1.0;
     } else {
-      const { speaker, speed, pitch, intonation } =
-        next.voice ?? getGuildSettings(guildId);
-      wav = await synth(next.text, speaker, {
-        speedScale: speed,
-        pitchScale: pitch,
-        intonationScale: intonation,
-      });
+      audio = await synthVoice(
+        guildId,
+        next.text,
+        next.voice ?? getGuildSettings(guildId)
+      );
     }
-    session.player.play(wavToResource(wav, volume));
+    session.player.play(audioToResource(audio, volume));
   } catch (err) {
-    // 合成/再生に失敗した1件だけスキップして次のキューへ進む (VOICEVOX一時不通などで全体を止めない)
+    // 合成/再生に失敗した1件だけスキップして次のキューへ進む (エンジン一時不通などで全体を止めない)
     logError(`再生に失敗したためスキップします (guild: ${guildId})`, err);
     session.playing = false;
     drain(guildId);

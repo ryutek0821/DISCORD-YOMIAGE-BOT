@@ -15,6 +15,7 @@ const dictPath = join(dataDir, "dictionary.json");
 const userSettingsPath = join(dataDir, "userSettings.json");
 const userDictPath = join(dataDir, "userDict.json");
 const ignorePath = join(dataDir, "ignore.json");
+const fishVoicesPath = join(dataDir, "fishVoices.json");
 
 const DEFAULT_SETTINGS = {
   speaker: 3,
@@ -24,8 +25,17 @@ const DEFAULT_SETTINGS = {
   announceVoiceState: true,
   readAuthorName: "off",
   maxLength: 50,
+  // Fish Audio は従量課金 ($15 / 1M UTF-8 bytes) なので暴走防止の日次上限を持つ。
+  // 日本語 3 バイト/字・maxLength 50 字なら 1 発言 ≒ 150 バイト → 約 330 発言/日。
+  // 0 は無制限。
+  fishDailyBytes: 50000,
 };
 const DEFAULT_IGNORE = { users: [], prefixes: [], readBots: false };
+
+// 組み込みの Fish Audio ボイス。ユーザー登録分より前に置いてマージするので常に存在する。
+const BUILTIN_FISH_VOICES = {
+  yaju: { name: "野獣先輩", referenceId: "0042f795e8744feba27460ce426d1500" },
+};
 
 function load(path, fallback = {}) {
   if (!existsSync(path)) return fallback;
@@ -47,6 +57,7 @@ let dictionary = load(dictPath); // { [guildId]: [{ word, reading }] }
 let userSettings = load(userSettingsPath); // 全サーバー共通 { [userId]: { speaker?, speed?, pitch?, intonation?, mute? } }
 let userDict = load(userDictPath, []); // 全サーバー共通 [{ uuid, word, reading, accent }] (VOICEVOX ユーザー辞書)
 let ignore = load(ignorePath); // { [guildId]: { users, prefixes, readBots } }
+let fishVoices = load(fishVoicesPath); // 全サーバー共通 { [alias]: { name, referenceId } }
 
 // 直接上書きすると書き込み途中の停止で JSON が壊れ、次回起動時に load() が
 // 黙って fallback に落ちて設定が丸ごと消える。一時ファイルへ書いてから
@@ -183,4 +194,28 @@ export function removeUserDictEntry(word) {
   userDict = before.filter((e) => e.word !== word);
   save(userDictPath, userDict);
   return entry;
+}
+
+// --- Fish Audio ボイス (全サーバー共通、alias -> { name, referenceId }) ---
+
+// 組み込みプリセットは常に含める。同じ alias をユーザーが登録した場合はそちらを優先する。
+export function getFishVoices() {
+  return { ...BUILTIN_FISH_VOICES, ...fishVoices };
+}
+
+export function isBuiltinFishVoice(alias) {
+  return Object.hasOwn(BUILTIN_FISH_VOICES, alias);
+}
+
+export function addFishVoice(alias, name, referenceId) {
+  fishVoices[alias] = { name, referenceId };
+  save(fishVoicesPath, fishVoices);
+  return fishVoices[alias];
+}
+
+export function removeFishVoice(alias) {
+  if (!Object.hasOwn(fishVoices, alias)) return false;
+  delete fishVoices[alias];
+  save(fishVoicesPath, fishVoices);
+  return true;
 }

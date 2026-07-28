@@ -1,9 +1,11 @@
 import { SlashCommandBuilder, MessageFlags } from "discord.js";
 import { getSpeakerIds } from "../voicevox.js";
+import { isConfigured as isFishConfigured, isReferenceId } from "../fishAudio.js";
 import {
   getUserSettings,
   updateUserSettings,
   clearUserSettings,
+  getFishVoices,
 } from "../store.js";
 import { resolveUserVoice } from "../userVoice.js";
 
@@ -15,6 +17,14 @@ export const data = new SlashCommandBuilder()
       .setName("speaker")
       .setDescription("話者(スタイル)ID。/speakers で一覧を確認")
       .setMinValue(0)
+  )
+  .addStringOption((o) =>
+    o
+      .setName("fish")
+      .setDescription(
+        "Fish Audio のボイス。/fishvoice list のエイリアス、または reference_id"
+      )
+      .setMaxLength(50)
   )
   .addNumberOption((o) =>
     o
@@ -43,8 +53,45 @@ export const data = new SlashCommandBuilder()
       .setDescription("自分の設定を消して自動(ランダム割り当て)に戻す")
   );
 
+// 入力から Fish の reference_id を引く。見つからなければ null。
+// 登録済みボイスは全ユーザー共通なので、誰が登録したものでも誰でも指定できる。
+// /fishvoice list の表示 (「エイリアス: 表示名」) をどちらの側で打っても通るようにし、
+// 大文字小文字も無視する (add 時に alias を小文字化しているため、完全一致だと
+// `Jyounetsu` のような入力が弾かれてしまう)。
+function resolveFishInput(input) {
+  const raw = input.trim();
+  const lower = raw.toLowerCase();
+  const voices = getFishVoices();
+
+  for (const [alias, v] of Object.entries(voices)) {
+    if (alias.toLowerCase() === lower) return v.referenceId;
+  }
+  for (const v of Object.values(voices)) {
+    if (v.name.toLowerCase() === lower) return v.referenceId;
+  }
+  return isReferenceId(lower) ? lower : null;
+}
+
+// reference_id から登録名を引く (未登録の生IDならID自体を見せる)
+function describeFishRef(referenceId) {
+  const entry = Object.entries(getFishVoices()).find(
+    ([, v]) => v.referenceId === referenceId
+  );
+  return entry ? `${entry[1].name} (${entry[0]})` : referenceId;
+}
+
+// 実効ボイスを人間が読める1行にする。VOICEVOX 固有の pitch/intonation は
+// Fish では効かないので、Fish のときは出さない。
+function describeVoice(eff, note = "") {
+  if (eff.engine === "fish" && eff.fishRef) {
+    return `エンジン=Fish Audio, ボイス=${describeFishRef(eff.fishRef)}, 速度=${eff.speed}`;
+  }
+  return `エンジン=VOICEVOX, 話者ID=${eff.speaker}${note}, 速度=${eff.speed}, 声の高さ=${eff.pitch}, 抑揚=${eff.intonation}`;
+}
+
 export async function execute(interaction) {
   const speaker = interaction.options.getInteger("speaker");
+  const fish = interaction.options.getString("fish");
   const speed = interaction.options.getNumber("speed");
   const pitch = interaction.options.getNumber("pitch");
   const intonation = interaction.options.getNumber("intonation");
@@ -60,18 +107,30 @@ export async function execute(interaction) {
     clearUserSettings(userId);
     const eff = await resolveUserVoice(userId, interaction.guildId);
     await interaction.editReply(
-      `自動(ランダム割り当て)に戻し、読み上げミュートも解除しました。現在の声: 話者ID=${eff.speaker}, 速度=${eff.speed}, 声の高さ=${eff.pitch}, 抑揚=${eff.intonation}`
+      `自動(ランダム割り当て)に戻し、読み上げミュートも解除しました。現在の声: ${describeVoice(eff)}`
     );
     return;
   }
 
   // 引数なし: 自分の実効設定を表示
-  if (speaker === null && speed === null && pitch === null && intonation === null) {
+  if (
+    speaker === null &&
+    fish === null &&
+    speed === null &&
+    pitch === null &&
+    intonation === null
+  ) {
     const s = getUserSettings(userId);
     const eff = await resolveUserVoice(userId, interaction.guildId);
     const note = s?.speaker == null ? "（自動割り当て）" : "";
+    await interaction.editReply(`あなたの現在の声: ${describeVoice(eff, note)}`);
+    return;
+  }
+
+  // speaker と fish は別エンジンの指定なので同時には受けない
+  if (speaker !== null && fish !== null) {
     await interaction.editReply(
-      `あなたの現在の声: 話者ID=${eff.speaker}${note}, 速度=${eff.speed}, 声の高さ=${eff.pitch}, 抑揚=${eff.intonation}`
+      "speaker (VOICEVOX) と fish (Fish Audio) は同時に指定できません。どちらか一方にしてください。"
     );
     return;
   }
@@ -91,17 +150,34 @@ export async function execute(interaction) {
       // Engine 未起動などは検証スキップ
     }
     patch.speaker = speaker;
+    patch.engine = "voicevox";
+    patch.fishRef = null;
   }
+
+  if (fish !== null) {
+    if (!isFishConfigured()) {
+      await interaction.editReply(
+        "Fish Audio は未設定です (FISH_API_KEY)。サーバー管理者に設定を依頼してください。"
+      );
+      return;
+    }
+    const referenceId = resolveFishInput(fish);
+    if (!referenceId) {
+      const known = Object.keys(getFishVoices()).join(", ");
+      await interaction.editReply(
+        `「${fish}」は登録済みボイスにも reference_id (32桁の16進数) にも該当しません。\n登録済み: ${known}`
+      );
+      return;
+    }
+    patch.engine = "fish";
+    patch.fishRef = referenceId;
+  }
+
   if (speed !== null) patch.speed = speed;
   if (pitch !== null) patch.pitch = pitch;
   if (intonation !== null) patch.intonation = intonation;
 
-  const updated = updateUserSettings(userId, patch);
-  await interaction.editReply(
-    `あなたの声を更新しました: 話者ID=${
-      updated.speaker ?? "(自動)"
-    }, 速度=${updated.speed ?? 1.0}, 声の高さ=${updated.pitch ?? 0.0}, 抑揚=${
-      updated.intonation ?? 1.0
-    }`
-  );
+  updateUserSettings(userId, patch);
+  const eff = await resolveUserVoice(userId, interaction.guildId);
+  await interaction.editReply(`あなたの声を更新しました: ${describeVoice(eff)}`);
 }

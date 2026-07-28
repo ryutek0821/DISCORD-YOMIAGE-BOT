@@ -40,6 +40,9 @@ Bot をコンテナで動かす場合、`VOICEVOX_URL` は compose 側で `http:
 | `VOICEVOX_URL` | 任意 | デフォルト `http://localhost:50021` |
 | `GUILD_IDS` | 任意 | コマンド登録先ギルドID (カンマ区切り) |
 | `READ_CHANNELS` | 任意 | 自動参加時の読み上げ対象ch (`guildId:channelId` カンマ区切り) |
+| `FISH_API_KEY` | 任意 | Fish Audio の APIキー。未設定なら Fish は無効化され VOICEVOX のみで動く |
+| `FISH_MODEL` | 任意 | デフォルト `s2.1-pro-free`。他に `s2.1-pro` / `s2-pro` / `s1` |
+| `FISH_API_URL` | 任意 | デフォルト `https://api.fish.audio` |
 
 Discord Developer Portal で **Message Content Intent** を有効にすること。
 
@@ -49,7 +52,10 @@ Discord Developer Portal で **Message Content Intent** を有効にすること
 src/
 ├── index.js          # エントリポイント。Discord イベント処理
 ├── player.js         # VC 接続・音声キュー管理 (guild ごとの sessions Map)
+├── tts.js            # TTSエンジンの分岐点 (VOICEVOX / Fish Audio) + Fishの日次バイト上限
 ├── voicevox.js       # VOICEVOX Engine HTTP クライアント (合成 + ユーザー辞書API)
+├── fishAudio.js      # Fish Audio TTS API クライアント (クラウド従量課金、任意)
+├── lruCache.js       # 挿入順Mapベースの簡易LRU (各エンジンが個別インスタンスを持つ)
 ├── textProcessor.js  # メッセージ前処理 (URL/コード/メンション/絵文字/Markdown/草の置換)
 ├── ignoreFilter.js   # ユーザー・個人ミュート・prefix・Bot発言の除外判定
 ├── userVoice.js      # 発言者ごとの話者解決ロジック
@@ -58,8 +64,9 @@ src/
 └── commands/         # スラッシュコマンド群
     ├── index.js      # コマンドを Map にまとめる
     ├── join.js / leave.js
-    ├── voice.js      # 個人の話者・速度・声の高さ(pitch)・抑揚(intonation)設定
-    ├── speakers.js   # 利用可能話者一覧表示
+    ├── voice.js      # 個人の話者・速度・声の高さ(pitch)・抑揚(intonation)・Fishボイス設定
+    ├── speakers.js   # 利用可能話者一覧表示 (末尾にFishボイスも併記)
+    ├── fishvoice.js  # Fish Audio ボイスの add/remove/list (add/removeは要ManageGuild)
     ├── config.js     # ギルド単位の読み上げ挙動設定
     ├── ignore.js     # ギルド/個人の読み上げ除外設定
     ├── replyLines.js # 2000字制限を避けるephemeral分割応答
@@ -67,16 +74,19 @@ src/
                        # ともに add/remove/list、add/remove は要ManageGuild権限
 ```
 
-**データフロー**: `MessageCreate` → Bot/セッション/対象ch/除外フィルタ判定 → 効果音判定 → `textProcessor.buildSpeech()` → 発言者名の前置 → `userVoice.resolveUserVoice()` → `player.enqueue()` → `voicevox.synth()` (WAVキャッシュ有り) → ffmpeg で Opus 変換 → Discord VC 再生
+**データフロー**: `MessageCreate` → Bot/セッション/対象ch/除外フィルタ判定 → 効果音判定 → `textProcessor.buildSpeech()` → 発言者名の前置 → `userVoice.resolveUserVoice()` → `player.enqueue()` → `tts.synthVoice()` → エンジン分岐して `voicevox.synth()` / `fishAudio.synth()` (どちらもWAVキャッシュ有り) → ffmpeg で Opus 変換 → Discord VC 再生
 
-**永続化**: `data/guildSettings.json`・`data/userSettings.json`・`data/dictionary.json`・`data/userDict.json`・`data/ignore.json` にその場で書き込む (DB なし)。書き込みは `.tmp` へ書いてから `rename` するアトミック方式 (直接上書きすると停止タイミング次第で JSON が壊れ、`load()` が黙って既定値に落ちて設定が消えるため)。ランタイム中はインメモリキャッシュを使う。Docker 運用時は `data/` をホストにボリュームマウント (`docker-compose.yml`) するため、コンテナを作り直しても設定は保持される。ただし `voicevox_engine` サービスにはボリュームが無いため、engine コンテナ自体を作り直すと VOICEVOX 側の user_dict は消える (→ 起動時に自動復元、後述)。
+**永続化**: `data/guildSettings.json`・`data/userSettings.json`・`data/dictionary.json`・`data/userDict.json`・`data/ignore.json`・`data/fishVoices.json` にその場で書き込む (DB なし)。書き込みは `.tmp` へ書いてから `rename` するアトミック方式 (直接上書きすると停止タイミング次第で JSON が壊れ、`load()` が黙って既定値に落ちて設定が消えるため)。ランタイム中はインメモリキャッシュを使う。Docker 運用時は `data/` をホストにボリュームマウント (`docker-compose.yml`) するため、コンテナを作り直しても設定は保持される。ただし `voicevox_engine` サービスにはボリュームが無いため、engine コンテナ自体を作り直すと VOICEVOX 側の user_dict は消える (→ 起動時に自動復元、後述)。
 
 ## 設計上のポイント
 
-- **話者の優先順位**: 個人設定 (`/voice`) > `userId % 話者数` による決定論的割り当て > ギルドデフォルト (speaker=3)。速度・pitch・intonation は個人設定がなければ既定値 (1.0 / 0.0 / 1.0)。`userVoice.resolveUserVoice()` が `{ speaker, speed, pitch, intonation }` を返し、`voicevox.synth()` の `audio_query` に反映する
+- **話者の優先順位**: 個人設定 (`/voice`) > `userId % 話者数` による決定論的割り当て > ギルドデフォルト (speaker=3)。速度・pitch・intonation は個人設定がなければ既定値 (1.0 / 0.0 / 1.0)。`userVoice.resolveUserVoice()` が `{ engine, speaker, fishRef, speed, pitch, intonation }` を返し、`tts.synthVoice()` がエンジンを選んで合成する。**engine が `fish` でも VOICEVOX の `speaker` は必ず解決する** — Fish の日次バイト上限超過時のフォールバック先として必要なため
+- **TTSエンジンの二本立て**: 既定は VOICEVOX。`/voice fish:<エイリアス|reference_id>` を明示指定したユーザーだけが Fish Audio ([fish.audio](https://fish.audio)) を使う。`/voice speaker:` と `/voice fish:` は排他 (同時指定はエラー)。**自動ランダム割り当ての対象は VOICEVOX 話者のみ**で Fish は混ぜない (課金と ID 空間が別物のため)。`speed` のレンジは両者 0.5〜2.0 で一致するが、`pitch`/`intonation` は VOICEVOX 固有 (`audio_query` のフィールド) なので Fish では無視される。`synth()` の呼び出し口を `tts.synthVoice()` の1箇所に集約してあるので、エンジン追加時に `player.js` を触る必要はない
+- **Fish Audio クライアント**: `POST /v1/tts` に `Authorization: Bearer` と `model` ヘッダを付けて JSON を投げ、`format: "wav"` で受ける。WAV で受けることで `player.js` の ffmpeg 動線を VOICEVOX と完全に共通化している。リトライ方針は `voicevox.js` と同じ (200ms→400ms、4xx は即諦め) だが**タイムアウトは 15 秒**と短い — VOICEVOX の 30 秒はローカル CPU 合成が遅い前提の値で、クラウド API が 15 秒返さないのは障害であり待ってもキューを止めるだけのため。Fish ボイスは `data/fishVoices.json` (全サーバー共通、`alias -> { name, referenceId }`) に登録し、組み込みプリセット (`yaju` = 野獣先輩) は常にマージされて削除できない
+- **Fish のコストガード**: Fish は従量課金 ($15 / 1M UTF-8 bytes、`s2.1-pro-free` は 2026-08-31 まで無料) のため、ギルド設定 `fishDailyBytes` (既定 50000、0 は無制限) で1日あたりの送信バイト数に上限を掛ける。カウンタは `tts.js` の in-memory Map (UTC 日付が変われば自動リセット) で**永続化しない** — 設定変更時だけ書き込む `data/` と違い、毎メッセージで fsync するのは割に合わないため。Bot 再起動でリセットされる。上限超過時は無音でスキップせず **VOICEVOX にフォールバック**して読み上げを継続し、警告ログはその日の初回だけ出す。一方 **API エラー/タイムアウト時はフォールバックしない** (既存どおり `drain()` がその1件だけスキップする) — 課金・可用性の問題と、キー不正のような設定ミスを黙って隠さないため
 - **自動参加/退出**: `VoiceStateUpdate` イベントで Bot のいない VC に人が入ったら自動参加、**Bot のいる VC** から Bot 以外が全員いなくなったら自動退出 (退出のあった ch が Bot の接続先かを必ず照合する。照合しないと無関係な VC の最後の1人が抜けただけで Bot が蹴り出される)
 - **読み上げ対象ch**: `/config channels` の `readChannelIds` が1件以上ならそのリストを優先し、空なら `/join`・自動参加が書く従来の `channelId`、それも無ければ全テキストchを対象にする。`/join` は `readChannelIds` を上書きしない
-- **読み上げ挙動設定**: `guildSettings.json` は従来の `speaker` / `speed` / `channelId` に加え、`readChannelIds` (既定`[]`)・`announceVoiceState` (既定`true`)・`readAuthorName` (`off|changed|always`、既定`off`)・`maxLength` (既定50)を持つ。発言者名の `changed` 状態はギルド単位のin-memory Mapで、チャンネル/発言者の変化または5分経過で名前を再び付ける
+- **読み上げ挙動設定**: `guildSettings.json` は従来の `speaker` / `speed` / `channelId` に加え、`readChannelIds` (既定`[]`)・`announceVoiceState` (既定`true`)・`readAuthorName` (`off|changed|always`、既定`off`)・`maxLength` (既定50)・`fishDailyBytes` (既定50000)を持つ。発言者名の `changed` 状態はギルド単位のin-memory Mapで、チャンネル/発言者の変化または5分経過で名前を再び付ける
 - **除外フィルタ**: 自Botは常に除外。他Botは `ignore.json` の `readBots`、発言者はギルドの `users` と全サーバー共通の `userSettings.mute`、本文は大文字小文字を区別しない前方一致 `prefixes` で判定する。ユーザー/mute/prefix除外は効果音より先に評価し、個人ミュートとギルドのユーザー除外はVC参加・退出通知にも適用する。自動参加/退出の在室者カウントは変えない。`/voice reset` は個人設定エントリごと削除するため `mute` も解除する
 - **起動時の自動再入室**: セッションは in-memory のため再起動で消える。`index.js` の `rejoinActiveChannels()` が `ClientReady` 時に、再起動前にいた VC (Discord 側に残る幽霊接続) へ最優先で入り直し、無ければ `READ_CHANNELS` 設定ギルドで人のいる VC に入る (人が居なければ入らない)
 - **セッション登録のタイミング**: `player.js` の `join()` は `entersState(Ready)` が成功してから `sessions` に登録する。先に登録すると接続失敗時に死んだセッションが残り、`getSession()` が truthy を返し続けて読み上げ無音・自動参加も不能になる。また `joinVoiceChannel` は同一 guildId の connection を使い回して返すため、リスナー登録は `WeakSet` で一度きりに絞る (毎回張ると積み増しになる)
