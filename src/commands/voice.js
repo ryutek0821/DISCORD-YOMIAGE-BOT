@@ -1,6 +1,12 @@
 import { SlashCommandBuilder, MessageFlags } from "discord.js";
 import { getSpeakerIds } from "../voicevox.js";
-import { isConfigured as isFishConfigured, isReferenceId } from "../fishAudio.js";
+import {
+  isConfigured as isFishConfigured,
+  isReferenceId,
+  intonationToTemperature,
+  supportsEmotion,
+  getModel as getFishModel,
+} from "../fishAudio.js";
 import {
   getUserSettings,
   updateUserSettings,
@@ -8,6 +14,23 @@ import {
   getFishVoices,
 } from "../store.js";
 import { resolveUserVoice } from "../userVoice.js";
+
+// Fish の感情タグ (S2系モデルのみ有効)。自由入力にすると、タグとして解釈されない
+// 文字列がそのまま読み上げられ、しかも課金バイトに乗るので choices で固定する。
+const EMOTION_OFF = "off";
+const EMOTION_CHOICES = [
+  { name: "happy (明るい)", value: "happy" },
+  { name: "sad (悲しい)", value: "sad" },
+  { name: "excited (興奮)", value: "excited" },
+  { name: "angry (怒り)", value: "angry" },
+  { name: "surprised (驚き)", value: "surprised" },
+  { name: "whisper (ささやき)", value: "whisper" },
+  { name: "laugh (笑い)", value: "laugh" },
+  { name: "sigh (ため息)", value: "sigh" },
+  { name: "gasp (息をのむ)", value: "gasp" },
+  { name: "emphasis (強調)", value: "emphasis" },
+  { name: "(解除)", value: EMOTION_OFF },
+];
 
 export const data = new SlashCommandBuilder()
   .setName("voice")
@@ -43,9 +66,15 @@ export const data = new SlashCommandBuilder()
   .addNumberOption((o) =>
     o
       .setName("intonation")
-      .setDescription("抑揚の強さ (0.0〜2.0、標準1.0)")
+      .setDescription("抑揚の強さ (0.0〜2.0、標準1.0)。Fishでは声の揺らぎに換算されます")
       .setMinValue(0.0)
       .setMaxValue(2.0)
+  )
+  .addStringOption((o) =>
+    o
+      .setName("fish_emotion")
+      .setDescription("Fish Audio の感情・話し方 (Fishボイスのときだけ効きます)")
+      .addChoices(...EMOTION_CHOICES)
   )
   .addBooleanOption((o) =>
     o
@@ -80,11 +109,19 @@ function describeFishRef(referenceId) {
   return entry ? `${entry[1].name} (${entry[0]})` : referenceId;
 }
 
-// 実効ボイスを人間が読める1行にする。VOICEVOX 固有の pitch/intonation は
-// Fish では効かないので、Fish のときは出さない。
+// 実効ボイスを人間が読める1行にする。Fish には pitch の対応物が無いので出さない。
+// intonation は temperature に換算されて効くので、換算後の値も併記して
+// 「指定が効いている」ことが分かるようにする。
 function describeVoice(eff, note = "") {
   if (eff.engine === "fish" && eff.fishRef) {
-    return `エンジン=Fish Audio, ボイス=${describeFishRef(eff.fishRef)}, 速度=${eff.speed}`;
+    const emotion = supportsEmotion()
+      ? (eff.fishEmotion ?? "なし")
+      : `非対応(model=${getFishModel()})`;
+    return (
+      `エンジン=Fish Audio, ボイス=${describeFishRef(eff.fishRef)}, 速度=${eff.speed}` +
+      `, 抑揚=${eff.intonation}(temperature ${intonationToTemperature(eff.intonation)})` +
+      `, 感情=${emotion}`
+    );
   }
   return `エンジン=VOICEVOX, 話者ID=${eff.speaker}${note}, 速度=${eff.speed}, 声の高さ=${eff.pitch}, 抑揚=${eff.intonation}`;
 }
@@ -95,6 +132,7 @@ export async function execute(interaction) {
   const speed = interaction.options.getNumber("speed");
   const pitch = interaction.options.getNumber("pitch");
   const intonation = interaction.options.getNumber("intonation");
+  const fishEmotion = interaction.options.getString("fish_emotion");
   const reset = interaction.options.getBoolean("reset");
   const userId = interaction.user.id;
 
@@ -118,7 +156,8 @@ export async function execute(interaction) {
     fish === null &&
     speed === null &&
     pitch === null &&
-    intonation === null
+    intonation === null &&
+    fishEmotion === null
   ) {
     const s = getUserSettings(userId);
     const eff = await resolveUserVoice(userId, interaction.guildId);
@@ -176,8 +215,18 @@ export async function execute(interaction) {
   if (speed !== null) patch.speed = speed;
   if (pitch !== null) patch.pitch = pitch;
   if (intonation !== null) patch.intonation = intonation;
+  // speaker 指定時に fishRef を消すのと違い、engine を切り替えても感情は残す
+  // (fish に戻したときに設定し直さなくて済むほうが自然)
+  if (fishEmotion !== null) {
+    patch.fishEmotion = fishEmotion === EMOTION_OFF ? null : fishEmotion;
+  }
 
   updateUserSettings(userId, patch);
   const eff = await resolveUserVoice(userId, interaction.guildId);
-  await interaction.editReply(`あなたの声を更新しました: ${describeVoice(eff)}`);
+  // Fish を使っていない人が感情だけ指定すると、下の1行に感情が出ず無反応に見えるので補足する
+  const hint =
+    fishEmotion !== null && eff.engine !== "fish"
+      ? "\n(感情は保存しましたが、`/voice fish:` で Fish Audio のボイスを選ぶまで効きません)"
+      : "";
+  await interaction.editReply(`あなたの声を更新しました: ${describeVoice(eff)}${hint}`);
 }

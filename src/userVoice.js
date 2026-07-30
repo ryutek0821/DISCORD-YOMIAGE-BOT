@@ -10,6 +10,10 @@ import { getSpeakerIds } from "./voicevox.js";
 // engine が "fish" でも VOICEVOX の speaker は必ず解決しておく。
 // Fish の日次バイト上限を超えたときのフォールバック先として tts.js が使うため。
 // 自動割り当ての対象は VOICEVOX の話者のみで、Fish は明示選択したユーザーだけが使う。
+//
+// intonation は engine ごとに解釈が違う (VOICEVOX は intonationScale、Fish は
+// temperature へ換算) ので、ここでは engine を問わず生の値を返し、翻訳は
+// fishAudio.intonationToTemperature() に任せる。pitch は Fish に対応物が無く無視される。
 export async function resolveUserVoice(userId, guildId) {
   const s = getUserSettings(userId);
   let speaker = s?.speaker;
@@ -18,6 +22,7 @@ export async function resolveUserVoice(userId, guildId) {
   const intonation = s?.intonation ?? 1.0;
   const engine = s?.engine ?? "voicevox";
   const fishRef = s?.fishRef ?? null;
+  const fishEmotion = s?.fishEmotion ?? null;
 
   if (speaker == null) {
     try {
@@ -31,5 +36,5 @@ export async function resolveUserVoice(userId, guildId) {
     if (speaker == null) speaker = getGuildSettings(guildId).speaker;
   }
 
-  return { engine, speaker, fishRef, speed, pitch, intonation };
+  return { engine, speaker, fishRef, fishEmotion, speed, pitch, intonation };
 }
