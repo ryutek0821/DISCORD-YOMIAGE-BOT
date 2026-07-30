@@ -64,7 +64,7 @@ src/
 └── commands/         # スラッシュコマンド群
     ├── index.js      # コマンドを Map にまとめる
     ├── join.js / leave.js
-    ├── voice.js      # 個人の話者・速度・声の高さ(pitch)・抑揚(intonation)・Fishボイス設定
+    ├── voice.js      # 個人の話者・速度・声の高さ(pitch)・抑揚(intonation)・Fishボイス/感情設定
     ├── speakers.js   # 利用可能話者一覧表示 (末尾にFishボイスも併記)
     ├── fishvoice.js  # Fish Audio ボイスの add/remove/list (add/removeは要ManageGuild)
     ├── config.js     # ギルド単位の読み上げ挙動設定
@@ -80,8 +80,9 @@ src/
 
 ## 設計上のポイント
 
-- **話者の優先順位**: 個人設定 (`/voice`) > `userId % 話者数` による決定論的割り当て > ギルドデフォルト (speaker=3)。速度・pitch・intonation は個人設定がなければ既定値 (1.0 / 0.0 / 1.0)。`userVoice.resolveUserVoice()` が `{ engine, speaker, fishRef, speed, pitch, intonation }` を返し、`tts.synthVoice()` がエンジンを選んで合成する。**engine が `fish` でも VOICEVOX の `speaker` は必ず解決する** — Fish の日次バイト上限超過時のフォールバック先として必要なため
-- **TTSエンジンの二本立て**: 既定は VOICEVOX。`/voice fish:<エイリアス|reference_id>` を明示指定したユーザーだけが Fish Audio ([fish.audio](https://fish.audio)) を使う。`/voice speaker:` と `/voice fish:` は排他 (同時指定はエラー)。**自動ランダム割り当ての対象は VOICEVOX 話者のみ**で Fish は混ぜない (課金と ID 空間が別物のため)。`speed` のレンジは両者 0.5〜2.0 で一致するが、`pitch`/`intonation` は VOICEVOX 固有 (`audio_query` のフィールド) なので Fish では無視される。`synth()` の呼び出し口を `tts.synthVoice()` の1箇所に集約してあるので、エンジン追加時に `player.js` を触る必要はない
+- **話者の優先順位**: 個人設定 (`/voice`) > `userId % 話者数` による決定論的割り当て > ギルドデフォルト (speaker=3)。速度・pitch・intonation は個人設定がなければ既定値 (1.0 / 0.0 / 1.0)。`userVoice.resolveUserVoice()` が `{ engine, speaker, fishRef, fishEmotion, speed, pitch, intonation }` を返し、`tts.synthVoice()` がエンジンを選んで合成する。**engine が `fish` でも VOICEVOX の `speaker` は必ず解決する** — Fish の日次バイト上限超過時のフォールバック先として必要なため
+- **TTSエンジンの二本立て**: 既定は VOICEVOX。`/voice fish:<エイリアス|reference_id>` を明示指定したユーザーだけが Fish Audio ([fish.audio](https://fish.audio)) を使う。`/voice speaker:` と `/voice fish:` は排他 (同時指定はエラー)。**自動ランダム割り当ての対象は VOICEVOX 話者のみ**で Fish は混ぜない (課金と ID 空間が別物のため)。`speed` のレンジは両者 0.5〜2.0 で一致する。`pitch` は VOICEVOX 固有 (`audio_query` のフィールド) で Fish に対応物が無いため無視されるが、`intonation` は `fishAudio.intonationToTemperature()` で Fish の `temperature` に換算して効かせる。`synth()` の呼び出し口を `tts.synthVoice()` の1箇所に集約してあるので、エンジン追加時に `player.js` を触る必要はない
+- **Fish の抑揚と感情タグ**: `/voice intonation` (0.0〜2.0) を Fish の `temperature` (0.1〜1.0) へ**折れ線**で換算する (`0→0.1` / `1→0.7` / `2→1.0`)。単純な線形換算だと既定値 1.0 が 0.55 になり、何も設定していない既存ユーザーの声が黙って平坦になるため、VOICEVOX 既定の 1.0 が Fish 既定の 0.7 に一致する形にしてある (未指定時は `temperature` フィールド自体を送らない)。`top_p` は触らない。`/voice fish_emotion` は本文頭に `[happy]` のようなタグを付けて話し方を変えるもので、**S2 系モデル限定** (`s1` に付けると literal に読まれるため `supportsEmotion()` で判定してスキップ)。タグは choices 固定 — 自由入力だとタグとして解釈されない文字列がそのまま読み上げられ、しかも課金バイトに乗る。タグの付与は `fishAudio.applyEmotion()` を `tts.js` から呼ぶ形にしてある: `synth()` の中で付けると課金バイトをタグ抜きで数えて日次上限の判定がずれるため。**VOICEVOX へのフォールバック時はタグなしの本文を使う** (VOICEVOX は `[happy]` をそのまま読む)
 - **Fish Audio クライアント**: `POST /v1/tts` に `Authorization: Bearer` と `model` ヘッダを付けて JSON を投げ、`format: "wav"` で受ける。WAV で受けることで `player.js` の ffmpeg 動線を VOICEVOX と完全に共通化している。リトライ方針は `voicevox.js` と同じ (200ms→400ms、4xx は即諦め) だが**タイムアウトは 15 秒**と短い — VOICEVOX の 30 秒はローカル CPU 合成が遅い前提の値で、クラウド API が 15 秒返さないのは障害であり待ってもキューを止めるだけのため。Fish ボイスは `data/fishVoices.json` (全サーバー共通、`alias -> { name, referenceId }`) に登録し、組み込みプリセット (`yaju` = 野獣先輩) は常にマージされて削除できない
 - **Fish のコストガード**: Fish は従量課金 ($15 / 1M UTF-8 bytes、`s2.1-pro-free` は 2026-08-31 まで無料) のため、ギルド設定 `fishDailyBytes` (既定 50000、0 は無制限) で1日あたりの送信バイト数に上限を掛ける。カウンタは `tts.js` の in-memory Map (UTC 日付が変われば自動リセット) で**永続化しない** — 設定変更時だけ書き込む `data/` と違い、毎メッセージで fsync するのは割に合わないため。Bot 再起動でリセットされる。上限超過時は無音でスキップせず **VOICEVOX にフォールバック**して読み上げを継続し、警告ログはその日の初回だけ出す。一方 **API エラー/タイムアウト時はフォールバックしない** (既存どおり `drain()` がその1件だけスキップする) — 課金・可用性の問題と、キー不正のような設定ミスを黙って隠さないため
 - **自動参加/退出**: `VoiceStateUpdate` イベントで Bot のいない VC に人が入ったら自動参加、**Bot のいる VC** から Bot 以外が全員いなくなったら自動退出 (退出のあった ch が Bot の接続先かを必ず照合する。照合しないと無関係な VC の最後の1人が抜けただけで Bot が蹴り出される)
