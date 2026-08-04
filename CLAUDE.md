@@ -25,7 +25,7 @@ docker compose run --rm bot npm run deploy
 
 ```bash
 docker compose up -d voicevox_engine   # Engine だけ起動
-npm start                              # ホストで Bot を起動 (要 Node.js 20+)
+npm start                              # ホストで Bot を起動 (要 Node.js 22.12+)
 npm run deploy
 ```
 
