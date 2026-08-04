@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 同じブランチへの連続 push では古い実行を打ち切る
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # package.json の engines (>=22.12.0) と Dockerfile の node:22-slim に揃える
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      # --engine-strict で Node 要件の乖離を CI で検出する
+      - name: Install
+        run: npm ci --engine-strict
+
+      # 実行前に構文エラーで落ちないことを確かめる (Bot は起動しない)
+      - name: Syntax check
+        run: find src test -name '*.js' -print0 | xargs -0 -n1 node --check
+
+      - name: Test
+        run: npm test
+
+      # high 以上だけ落とす。moderate 以下は upstream 待ちで止めない
+      - name: Audit (production deps)
+        run: npm audit --omit=dev --audit-level=high
+
+      # デプロイ対象そのものが壊れていないことを確認する
+      - name: Docker build
+        run: docker build -t yomiage-bot:ci .
+
+      # compose は env_file: .env を要求するので、検証用に空のものを置く
+      - name: Compose config
+        run: |
+          : > .env
+          docker compose config --quiet

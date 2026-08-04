@@ -17,6 +17,10 @@ docker compose up -d --build bot
 
 # スラッシュコマンドを Discord に登録 (初回 or コマンド変更時、単発実行)
 docker compose run --rm bot npm run deploy
+
+# テスト (node:test。Discord/VOICEVOX/Fish/ffmpeg には一切接続しない)
+npm test
+npm run test:watch
 ```
 
 `npm run deploy` は `.env` の `GUILD_IDS` にギルドIDが設定されていればギルド限定(即反映)、空ならグローバル登録(最大1時間遅延)。
@@ -96,6 +100,15 @@ src/
 - **テキスト整形**: `textProcessor.js` でコードブロック/URL/メンション/絵文字の除去に加え、スポイラー(`||text||`、中身は読まず「ネタバレ省略」に置換)・Markdown装飾記号(`**` `__` `~~` `*` `_`、見出し`#`・引用`>`・箇条書き`-`の先頭記号)の除去(中身は読み上げる)・文末/単独の「w/ｗ」連続 (2文字以上) を「笑」に変換 (英単語中の `ww` は対象外) を行う。末尾の切り捨てはギルド設定 `maxLength` を使い、参照時にも10〜200へクランプする。発言者名は辞書適用後20文字で切り、本文の切り捨て後に前置する
 - **VOICEVOX クライアントの耐性**: `voicevox.js` の `request()` は一時的な不通/5xxに対して200ms→400msのバックオフで最大2回リトライする (4xxは即諦める)。全リクエストに 30 秒のタイムアウトを掛ける (`AbortSignal.timeout`)。タイムアウト時はリトライしない — Engine が応答不能な状態で再挑戦してもキューを止める時間が延びるだけのため。`/user_dict_word` の POST は冪等でないので `retry: false` (5xx を返しつつ登録済みだと別 uuid で二重登録されるため)。`synth()` は `speaker:speed:pitch:intonation:text` をキーにした挿入順Map (上限100件、簡易LRU) でWAVをキャッシュし、同一文言の再合成コストを削減する。`getSpeakerIds()` 失敗時はギルドデフォルト話者にフォールバック。起動時に疎通確認の警告ログを出すが Bot は停止しない
 - **辞書は2系統のハイブリッド構成**: `/dict replace` (既存の文字列置換辞書、`data/dictionary.json`、guildId単位) はどんな表層形/読みでも登録できる代わりに単純な全置換。`/dict word` (VOICEVOXユーザー辞書、`data/userDict.json`、全サーバー共通) は VOICEVOX の形態素解析に単語として正式登録するため読み精度が上がるが、`pronunciation` は全角カタカナのみ受け付ける (`voicevox.js` の `hiraganaToKatakana`/`isKatakana` でひらがな入力を変換・検証)。既存の顔文字/記号系エントリ (`(^^)` 等) はカタカナ化できないため `dictionary.json` 側に残したまま移行していない。`voicevox_engine` コンテナは user_dict を永続化しないため、`index.js` の `ClientReady` で `importUserDict()` により `data/userDict.json` の内容 (登録時にVOICEVOXが発行したuuidを保持) を engine へ再投入し復元する
+
+## テスト
+
+`test/` に `node:test` の回帰テストを置く (`npm test`)。CI (`.github/workflows/ci.yml`) が PR と main への push で `npm ci --engine-strict` → 構文チェック → `npm test` → `npm audit --omit=dev --audit-level=high` → `docker build` まで回す。
+
+- **外部依存には一切接続しない**。Discord/VOICEVOX/Fish Audio/ffmpeg を叩かず決定論的に完了する
+- `store.js` は `YOMIAGE_DATA_DIR` で読み書き先を差し替えられる。`test/helpers.js` の `useTempDataDir()` が一時ディレクトリを作って env にセットするので、**`src/store.js` を import する前に呼ぶこと** (store は import 時に JSON を読む)
+- HTTP は `test/helpers.js` の `stubFetch()` で `globalThis.fetch` を差し替える。`voicevox.js`/`fishAudio.js` は呼び出し時に `fetch` を解決するので、本番コードを触らずにモックできる
+- `getSpeakerIds()` のようなモジュールレベルのキャッシュを跨ぐ検証は**ファイルを分ける**。`node:test` はファイルごとに別プロセスで走るため、これがキャッシュを確実にリセットする唯一の手段 (`test/userVoiceFallback.test.js` がその例)
 
 ## スラッシュコマンド追加手順
 
