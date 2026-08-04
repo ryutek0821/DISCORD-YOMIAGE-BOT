@@ -15,23 +15,6 @@ import { replyLines } from "./replyLines.js";
 
 const ALIAS_PATTERN = /^[a-z0-9_-]{1,20}$/;
 
-// 呼び出し名が省略されたときの自動生成。
-// 表示名から ASCII 英数字を拾えればそれを、日本語だけの名前など拾えなければ
-// モデルIDの先頭8桁を使う (一意性はIDに依存させる)。
-function autoAlias(title, referenceId, existing) {
-  const slug = String(title).toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 20);
-  const base = ALIAS_PATTERN.test(slug) ? slug : `m${referenceId.slice(0, 8)}`;
-  // 既存の別ボイスとぶつかる場合だけ連番を足す (同じボイスの再登録は上書きさせる)
-  if (!existing[base] || existing[base].referenceId === referenceId) return base;
-  for (let i = 2; i < 100; i++) {
-    const candidate = `${base}${i}`.slice(0, 20);
-    if (!existing[candidate] || existing[candidate].referenceId === referenceId) {
-      return candidate;
-    }
-  }
-  return `m${referenceId.slice(0, 8)}`;
-}
-
 export const data = new SlashCommandBuilder()
   .setName("fishvoice")
   .setDescription("Fish Audio のボイスを管理します (/voice fish: で選択)")
@@ -52,14 +35,9 @@ export const data = new SlashCommandBuilder()
       .addStringOption((o) =>
         o
           .setName("alias")
-          .setDescription("呼び出し名 (省略可。英小文字・数字・_ - のみ、20文字まで)")
+          .setDescription("呼び出し名 (英小文字・数字・_ - のみ、20文字まで)")
+          .setRequired(true)
           .setMaxLength(20)
-      )
-      .addStringOption((o) =>
-        o
-          .setName("name")
-          .setDescription("表示名 (省略時は fish.audio から自動取得)")
-          .setMaxLength(50)
       )
   )
   .addSubcommand((s) =>
@@ -119,9 +97,8 @@ export async function execute(interaction) {
 // ついでに「そのモデルが実在して使えるか」も確認する (存在しないIDを登録すると
 // 発言時に初めて合成が失敗して原因が分かりにくいため)。
 async function executeAdd(interaction) {
-  const modelInput = interaction.options.getString("model");
-  const aliasInput = interaction.options.getString("alias");
-  const nameInput = interaction.options.getString("name");
+  const modelInput = interaction.options.getString("model", true);
+  const alias = interaction.options.getString("alias", true).trim().toLowerCase();
 
   const referenceId = parseReferenceId(modelInput);
   if (!referenceId) {
@@ -133,7 +110,7 @@ async function executeAdd(interaction) {
     return;
   }
 
-  if (aliasInput !== null && !ALIAS_PATTERN.test(aliasInput.trim().toLowerCase())) {
+  if (!ALIAS_PATTERN.test(alias)) {
     await interaction.reply({
       content: "呼び出し名は英小文字・数字・アンダースコア・ハイフンのみで指定してください。",
       flags: MessageFlags.Ephemeral,
@@ -170,11 +147,7 @@ async function executeAdd(interaction) {
     return;
   }
 
-  const name = (nameInput ?? info.title ?? "").trim() || referenceId;
-  const alias =
-    aliasInput !== null
-      ? aliasInput.trim().toLowerCase()
-      : autoAlias(name, referenceId, getFishVoices());
+  const name = String(info.title ?? "").trim() || referenceId;
 
   addFishVoice(alias, name, referenceId);
 
