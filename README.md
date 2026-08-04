@@ -17,7 +17,7 @@ VOICEVOX Engine を使った Discord 読み上げ Bot。指定したテキスト
 
 ## 必要なもの
 
-- Node.js 20 以上
+- Node.js 22.12 以上
 - Docker（VOICEVOX Engine 起動用）
 - Discord Bot（Developer Portal で作成）
 

@@ -1,5 +1,5 @@
 # --- builder: native モジュール (@discordjs/opus, sodium-native) をビルド ---
-FROM node:20-slim AS builder
+FROM node:22-slim AS builder
 
 WORKDIR /app
 
@@ -12,7 +12,7 @@ COPY package.json package-lock.json* ./
 RUN npm ci
 
 # --- runtime: ビルド済み node_modules とアプリ本体のみ ---
-FROM node:20-slim AS runtime
+FROM node:22-slim AS runtime
 
 ENV NODE_ENV=production
 WORKDIR /app
