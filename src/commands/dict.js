@@ -1,6 +1,7 @@
 import { SlashCommandBuilder, MessageFlags, PermissionFlagsBits } from "discord.js";
 import {
   addDictionaryEntry,
+  DICTIONARY_MAX_ENTRIES,
   removeDictionaryEntry,
   getDictionary,
   addUserDictEntry,
@@ -125,7 +126,13 @@ async function executeReplace(interaction, sub, guildId) {
   if (sub === "add") {
     const word = interaction.options.getString("word");
     const reading = interaction.options.getString("reading");
-    addDictionaryEntry(guildId, word, reading);
+    if (!addDictionaryEntry(guildId, word, reading)) {
+      await interaction.reply({
+        content: `辞書は最大 ${DICTIONARY_MAX_ENTRIES} 件までです。不要な語を /dict replace remove で削除してください。`,
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
     await interaction.reply({
       content: `登録しました: 「${word}」→「${reading}」`,
       flags: MessageFlags.Ephemeral,

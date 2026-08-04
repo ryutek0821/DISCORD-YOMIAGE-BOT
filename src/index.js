@@ -11,7 +11,6 @@ import {
 } from "./store.js";
 import {
   buildSpeech,
-  applyDictionary,
   formatAuthorName,
 } from "./textProcessor.js";
 import { isIgnoredMessage, isIgnoredMember } from "./ignoreFilter.js";
@@ -227,8 +226,10 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
     settings.announceVoiceState &&
     !isIgnoredMember(guildId, userId)
   ) {
-    const rawName = member?.displayName ?? member?.user?.username ?? "誰か";
-    const name = applyDictionary(rawName, guildId);
+    // 本文につける発言者名と同じサニタイズを通す。ニックネームは 32 文字まで
+    // 任意の Unicode を入れられるので、辞書適用だけだとカスタム絵文字記法や
+    // 絵文字がそのまま VOICEVOX に渡り、記号と数字が延々読み上げられる。
+    const name = formatAuthorName(member, member?.user, guildId);
     const cameIn =
       newState.channelId === botChannelId && oldState.channelId !== botChannelId;
     const wentOut =

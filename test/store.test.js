@@ -59,6 +59,18 @@ describe("辞書 (置換辞書)", () => {
     assert.deepEqual(store.getDictionary("g1"), []);
   });
 
+  test("上限を超える追加は false を返して保存しない", () => {
+    for (let i = 0; i < store.DICTIONARY_MAX_ENTRIES; i++) {
+      assert.equal(store.addDictionaryEntry("gmax", `w${i}`, `r${i}`), true);
+    }
+    assert.equal(store.getDictionary("gmax").length, store.DICTIONARY_MAX_ENTRIES);
+    assert.equal(store.addDictionaryEntry("gmax", "overflow", "x"), false);
+    assert.equal(store.getDictionary("gmax").length, store.DICTIONARY_MAX_ENTRIES);
+    // 既存語の上書きは件数が増えないので上限に達していても通る
+    assert.equal(store.addDictionaryEntry("gmax", "w0", "更新"), true);
+    assert.equal(store.getDictionary("gmax").at(-1).reading, "更新");
+  });
+
   test("同じ語を再登録しても重複しない", () => {
     store.addDictionaryEntry("g1", "草", "くさ");
     store.addDictionaryEntry("g1", "草", "そう");

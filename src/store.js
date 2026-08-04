@@ -104,12 +104,21 @@ export function getDictionary(guildId) {
   return dictionary[guildId] || [];
 }
 
+// 置換辞書のギルドあたり上限。/ignore の users(100) / prefixes(20) と違い辞書には
+// 上限が無く、1エントリ reading 200 字と組み合わせると読み上げ整形の中間文字列が
+// 際限なく膨らむ。追加できなかったことは呼び出し側に返して伝える。
+const DICTIONARY_MAX_ENTRIES = 200;
+
 export function addDictionaryEntry(guildId, word, reading) {
   const list = getDictionary(guildId).filter((e) => e.word !== word);
+  if (list.length >= DICTIONARY_MAX_ENTRIES) return false;
   list.push({ word, reading });
   dictionary[guildId] = list;
   save(dictPath, dictionary);
+  return true;
 }
+
+export { DICTIONARY_MAX_ENTRIES };
 
 export function removeDictionaryEntry(guildId, word) {
   const before = getDictionary(guildId);

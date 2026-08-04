@@ -82,7 +82,10 @@ export async function synth(
   if (cached) return cached;
 
   const queryRes = await request(
-    `/audio_query?text=${encodeURIComponent(text)}&speaker=${speaker}`,
+    // 孤立サロゲートが混ざると encodeURIComponent が URIError を投げ、その発言が
+    // 丸ごと捨てられる。整形側でも防いでいるが、ここでも最後に均しておく。
+    // 手書きの /[\uD800-\uDFFF]/ は正常なペアまで壊すので toWellFormed を使う。
+    `/audio_query?text=${encodeURIComponent(text.toWellFormed())}&speaker=${speaker}`,
     { method: "POST" }
   );
   const query = await queryRes.json();
