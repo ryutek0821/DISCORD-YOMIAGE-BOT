@@ -18,6 +18,7 @@ import { isIgnoredMessage, isIgnoredMember } from "./ignoreFilter.js";
 import { isAlive, importUserDict } from "./voicevox.js";
 import { logFishStatus } from "./tts.js";
 import { resolveUserVoice } from "./userVoice.js";
+import { logError } from "./log.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join as pathJoin } from "node:path";
 
@@ -30,6 +31,15 @@ const SOUND_TRIGGERS = new Map([
 // guildId -> { channelId, userId, at }。発言者名 changed 判定専用の一時状態。
 const lastSpeaker = new Map();
 const AUTHOR_NAME_RESET_MS = 5 * 60_000;
+
+// 最終防衛ライン。1つのイベント処理の失敗でプロセスごと落ちると、全ギルドでセッション・
+// キュー・WAV キャッシュが消えて復帰に時間がかかるため、ログだけ残して稼働を続ける。
+process.on("unhandledRejection", (reason) => {
+  logError("unhandledRejection", reason);
+});
+process.on("uncaughtException", (err) => {
+  logError("uncaughtException", err);
+});
 
 const { DISCORD_TOKEN } = process.env;
 if (!DISCORD_TOKEN) {

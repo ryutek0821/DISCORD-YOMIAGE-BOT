@@ -2,8 +2,11 @@ services:
   voicevox_engine:
     image: voicevox/voicevox_engine:cpu-latest
     container_name: voicevox_engine
+    # Bot はサービス名 voicevox_engine:50021 で内部到達するため外部公開は不要。
+    # VOICEVOX の HTTP API は認証が無く、辞書変更も /synthesis による CPU 占有もできてしまうので、
+    # ホストからの診断用に loopback だけへ絞る (LAN / Tailscale からは到達しない)。
     ports:
-      - "50021:50021"
+      - "127.0.0.1:50021:50021"
     restart: unless-stopped
 
   bot:

@@ -89,6 +89,14 @@ async function doJoin(channel) {
   if (!wiredConnections.has(connection)) {
     wiredConnections.add(connection);
 
+    // VoiceConnection は配下の WebSocket / UDP / DAVE のエラーをそのまま "error" として
+    // emit する。EventEmitter はリスナー不在の 'error' で throw するため、購読していないと
+    // UDP の ECONNRESET 1つで Bot プロセスごと落ちる。復旧は Disconnected 側に任せ、
+    // ここではログに落として握りつぶす。
+    connection.on("error", (err) => {
+      logError(`VoiceConnection error (guild: ${guildId})`, err);
+    });
+
     // 一時的な切断は再接続を試み、本当に切れた時だけ破棄する
     connection.on(VoiceConnectionStatus.Disconnected, async () => {
       try {
