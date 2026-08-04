@@ -54,7 +54,7 @@ function ensureDir() {
 
 let settings = load(settingsPath); // ギルド単位の読み上げ設定
 let dictionary = load(dictPath); // { [guildId]: [{ word, reading }] }
-let userSettings = load(userSettingsPath); // 全サーバー共通 { [userId]: { speaker?, speed?, pitch?, intonation?, mute? } }
+let userSettings = load(userSettingsPath); // 全サーバー共通 { [userId]: { speaker?, speed?, pitch?, intonation?, engine?, fishRef?, fishEmotion?, mute? } }
 let userDict = load(userDictPath, []); // 全サーバー共通 [{ uuid, word, reading, accent }] (VOICEVOX ユーザー辞書)
 let ignore = load(ignorePath); // { [guildId]: { users, prefixes, readBots } }
 let fishVoices = load(fishVoicesPath); // 全サーバー共通 { [alias]: { name, referenceId } }

@@ -110,15 +110,51 @@ function clampSpeed(speed) {
   return Math.min(2.0, Math.max(0.5, speed));
 }
 
+// 非数値なら null を返し、呼び出し側が temperature 自体を送らないようにする。
+function clampTemperature(temperature) {
+  if (typeof temperature !== "number" || !Number.isFinite(temperature)) return null;
+  return Math.min(1.0, Math.max(0.1, temperature));
+}
+
+// VOICEVOX の intonation (0.0〜2.0、既定1.0) を Fish の temperature (0.1〜1.0、既定0.7)
+// に翻訳する。/voice のつまみを engine ごとに増やさないための換算で、この知識は
+// Fish 側の都合なのでここに閉じる。
+//
+// 単純な線形換算 (intonation/2*0.9+0.1) にすると既定値 1.0 が 0.55 に落ちて、
+// 何も設定していない既存ユーザーの声が黙って平坦になってしまう。1.0 が Fish 既定の
+// 0.7 に一致する折れ線にして非回帰を守る。
+export function intonationToTemperature(intonation) {
+  if (typeof intonation !== "number" || !Number.isFinite(intonation)) return null;
+  const v = Math.min(2.0, Math.max(0.0, intonation));
+  const temperature = v <= 1.0 ? 0.1 + v * 0.6 : 0.7 + (v - 1.0) * 0.3;
+  // 折れ線の計算で 0.7000000000000001 のような値になるとキャッシュキーが濁るので丸める
+  return Math.round(temperature * 1000) / 1000;
+}
+
+// 感情タグ (`[happy]` 等) を解釈するのは S2 系モデルのみ。s1 に付けると
+// 「かくかっこハッピー」のように literal に読まれてしまうため判定して外す。
+export function supportsEmotion() {
+  return MODEL.startsWith("s2");
+}
+
+// 本文の先頭に感情タグを付ける。tts.js から呼ぶ:
+// synth の中でこっそり付けると、tts.js が課金バイトをタグ抜きで数えてしまい
+// 日次上限の判定がずれる (タグ分も UTF-8 バイトとして課金される)。
+export function applyEmotion(text, emotion) {
+  if (!emotion || !supportsEmotion()) return text;
+  return `[${emotion}] ${text}`;
+}
+
 // テキストを WAV (Buffer) に合成する。
 // format: "wav" を指定しておくと player.js の ffmpeg 動線を VOICEVOX と共通化できる。
-export async function synth(text, referenceId, { speed = 1.0 } = {}) {
+export async function synth(text, referenceId, { speed = 1.0, temperature } = {}) {
   if (!isConfigured()) {
     throw new Error("FISH_API_KEY が未設定です");
   }
 
   const speedScale = clampSpeed(speed);
-  const cacheKey = `${referenceId}:${speedScale}:${text}`;
+  const temp = clampTemperature(temperature);
+  const cacheKey = `${referenceId}:${speedScale}:${temp ?? "d"}:${text}`;
   const cached = wavCache.get(cacheKey);
   if (cached) return cached;
 
@@ -133,6 +169,8 @@ export async function synth(text, referenceId, { speed = 1.0 } = {}) {
       reference_id: referenceId,
       format: "wav",
       prosody: { speed: speedScale },
+      // 未指定のときはフィールド自体を送らず Fish の既定 (0.7) に任せる
+      ...(temp === null ? {} : { temperature: temp }),
       latency: "normal",
     }),
   });

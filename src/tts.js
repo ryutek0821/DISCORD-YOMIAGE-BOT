@@ -46,14 +46,20 @@ export function useFish(voice) {
   );
 }
 
-// voice = { engine, speaker, fishRef, speed, pitch, intonation }
+// voice = { engine, speaker, fishRef, speed, pitch, intonation, fishEmotion }
 // 返り値は WAV の Buffer。合成に失敗した場合は throw し、player.js 側でその 1 件だけ
 // スキップされる (Fish の API エラー時に VOICEVOX へ勝手に切り替えたりはしない)。
 export async function synthVoice(guildId, text, voice) {
   if (useFish(voice)) {
-    const bytes = fishAudio.estimateBytes(text);
+    // 感情タグは Fish に渡す本文にだけ付ける。タグ分も課金対象なので
+    // 上限判定より先に付けてからバイト数を数える。
+    const fishText = fishAudio.applyEmotion(text, voice.fishEmotion);
+    const bytes = fishAudio.estimateBytes(fishText);
     if (withinDailyLimit(guildId, bytes)) {
-      const wav = await fishAudio.synth(text, voice.fishRef, { speed: voice.speed });
+      const wav = await fishAudio.synth(fishText, voice.fishRef, {
+        speed: voice.speed,
+        temperature: fishAudio.intonationToTemperature(voice.intonation),
+      });
       // 成功したぶんだけ計上する (失敗したリクエストは課金されない想定)
       addUsage(guildId, bytes);
       return wav;
@@ -68,6 +74,7 @@ export async function synthVoice(guildId, text, voice) {
     }
   }
 
+  // フォールバックはタグなしの text を使う (VOICEVOX は `[happy]` をそのまま読む)
   return voicevoxSynth(text, voice.speaker, {
     speedScale: voice.speed,
     pitchScale: voice.pitch,
