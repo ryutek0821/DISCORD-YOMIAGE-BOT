@@ -9,7 +9,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { logError } from "./log.js";
 
-const dataDir = join(dirname(fileURLToPath(import.meta.url)), "..", "data");
+// 既定はリポジトリ直下の data/。テストが本番データを踏まないよう env で差し替えられる
+// (Docker 運用では data/ をホストにボリュームマウントするため未設定のままでよい)。
+const dataDir =
+  process.env.YOMIAGE_DATA_DIR ||
+  join(dirname(fileURLToPath(import.meta.url)), "..", "data");
 const settingsPath = join(dataDir, "guildSettings.json");
 const dictPath = join(dataDir, "dictionary.json");
 const userSettingsPath = join(dataDir, "userSettings.json");
@@ -70,7 +74,14 @@ function save(path, obj) {
 }
 
 export function getGuildSettings(guildId) {
-  return { ...DEFAULT_SETTINGS, ...(settings[guildId] || {}) };
+  // スプレッドは浅いコピーなので、そのままだと readChannelIds の配列参照が
+  // DEFAULT_SETTINGS と共有され、呼び出し側が push した瞬間に全ギルドの既定値が汚れる。
+  // 配列だけは必ず複製して返す。
+  return {
+    ...DEFAULT_SETTINGS,
+    readChannelIds: [...DEFAULT_SETTINGS.readChannelIds],
+    ...(settings[guildId] || {}),
+  };
 }
 
 export function updateGuildSettings(guildId, patch) {
