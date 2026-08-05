@@ -4,6 +4,7 @@ import { PermissionFlagsBits } from "discord.js";
 import {
   authorizeJoin,
   authorizeLeave,
+  authorizeSkip,
   isVoiceOperator,
   isOperator,
   parseOperatorIds,
@@ -88,6 +89,39 @@ describe("authorizeLeave", () => {
     }
     assert.deepEqual(
       authorizeLeave({ botChannelId: "vcA", userChannelId: null, privileged: true }),
+      { allowed: true }
+    );
+  });
+});
+
+describe("authorizeSkip", () => {
+  test("Bot 未接続なら通す (呼び出し側が「読み上げていません」を返す)", () => {
+    assert.deepEqual(
+      authorizeSkip({ botChannelId: null, userChannelId: null, privileged: false }),
+      { allowed: true }
+    );
+  });
+
+  test("同じVCにいれば一般ユーザーでもスキップできる", () => {
+    assert.deepEqual(
+      authorizeSkip({ botChannelId: "vcA", userChannelId: "vcA", privileged: false }),
+      { allowed: true }
+    );
+  });
+
+  test("別VCからのスキップは権限が要る", () => {
+    const denied = authorizeSkip({
+      botChannelId: "vcA",
+      userChannelId: "vcB",
+      privileged: false,
+    });
+    assert.equal(denied.allowed, false);
+    assert.match(denied.reason, /権限が必要/);
+  });
+
+  test("別VCでも特権があればスキップできる", () => {
+    assert.deepEqual(
+      authorizeSkip({ botChannelId: "vcA", userChannelId: "vcB", privileged: true }),
       { allowed: true }
     );
   });
