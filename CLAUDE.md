@@ -44,6 +44,7 @@ Bot をコンテナで動かす場合、`VOICEVOX_URL` は compose 側で `http:
 | `VOICEVOX_URL` | 任意 | デフォルト `http://localhost:50021` |
 | `GUILD_IDS` | 任意 | コマンド登録先ギルドID (カンマ区切り) |
 | `READ_CHANNELS` | 任意 | 自動参加時の読み上げ対象ch (`guildId:channelId` カンマ区切り) |
+| `OPERATOR_IDS` | 任意 | `/dict word` (全サーバー共通辞書) を操作・閲覧できるユーザーID (カンマ区切り)。未設定なら Bot 所有者のみ |
 | `FISH_API_KEY` | 任意 | Fish Audio の APIキー。未設定なら Fish は無効化され VOICEVOX のみで動く |
 | `FISH_MODEL` | 任意 | デフォルト `s2.1-pro-free`。他に `s2.1-pro` / `s2-pro` / `s1` |
 | `FISH_API_URL` | 任意 | デフォルト `https://api.fish.audio` |
@@ -67,9 +68,10 @@ src/
 ├── userVoice.js      # 発言者ごとの話者解決ロジック
 ├── store.js          # JSON ファイル永続化 (data/ ディレクトリ)
 ├── schema.js         # 永続 JSON の shape 検証 (store.js が load 時に適用)
+├── authorize.js      # /join・/leave の認可と /dict word の運用者判定 (純粋関数)
 ├── log.js            # タイムスタンプ付きの簡易ロガー
 └── commands/         # スラッシュコマンド群
-    ├── index.js      # コマンドを Map にまとめる
+    ├── index.js      # コマンドを Map にまとめ、Guild限定の付与と実行時ガードを一括で掛ける
     ├── join.js / leave.js
     ├── voice.js      # 個人の話者・速度・声の高さ(pitch)・抑揚(intonation)・Fishボイス/感情設定
     ├── speakers.js   # 利用可能話者一覧表示 (末尾にFishボイスも併記)
@@ -77,8 +79,8 @@ src/
     ├── config.js     # ギルド単位の読み上げ挙動設定
     ├── ignore.js     # ギルド/個人の読み上げ除外設定
     ├── replyLines.js # 2000字制限を避けるephemeral分割応答
-    └── dict.js       # /dict replace (文字列置換辞書) と /dict word (VOICEVOXユーザー辞書)、
-                       # ともに add/remove/list、add/remove は要ManageGuild権限
+    └── dict.js       # /dict replace (文字列置換辞書、要ManageGuild) と
+                       # /dict word (VOICEVOXユーザー辞書、全サーバー共通なので運用者限定)
 ```
 
 **データフロー**: `MessageCreate` → Bot/セッション/対象ch/除外フィルタ判定 → 効果音判定 → `textProcessor.buildSpeech()` → 発言者名の前置 → `userVoice.resolveUserVoice()` → `player.enqueue()` → `tts.synthVoice()` → エンジン分岐して `voicevox.synth()` / `fishAudio.synth()` (どちらもWAVキャッシュ有り) → ffmpeg で Opus 変換 → Discord VC 再生
@@ -103,6 +105,7 @@ src/
 - **起動時の自動再入室**: セッションは in-memory のため再起動で消える。`index.js` の `rejoinActiveChannels()` が `ClientReady` 時に、再起動前にいた VC (Discord 側に残る幽霊接続) へ最優先で入り直し、無ければ `READ_CHANNELS` 設定ギルドで人のいる VC に入る (人が居なければ入らない)
 - **セッション登録のタイミング**: `player.js` の `join()` は `entersState(Ready)` が成功してから `sessions` に登録する。先に登録すると接続失敗時に死んだセッションが残り、`getSession()` が truthy を返し続けて読み上げ無音・自動参加も不能になる。また `joinVoiceChannel` は同一 guildId の connection を使い回して返すため、リスナー登録は `WeakSet` で一度きりに絞る (毎回張ると積み増しになる)
 - **参加前の検証と移動完了の確認**: `doJoin()` は接続前に `channel.joinable` / `speakable` を見て、権限不足・満員なら `userFacing` 付きのエラーで即座に落とす (`/join` はその文言をそのまま返す。汎用文言に潰すと管理者が直せる原因が伝わらない)。さらに **`entersState(Ready)` の成功だけでは移動完了の証明にならない** — VC-A で既に Ready の connection を VC-B へ移す場合、`entersState` は移動前に即解決するため、そのまま session を登録すると B 向けの音声が A へ流れたまま「B に参加しました」と応答してしまう。`channels.js` の `waitForBotChannel()` で **Bot 自身の VoiceState が対象chになるまで待ち**、確認できなければ connection を破棄して失敗扱いにする (Bot の `GuildMember` が未キャッシュのときだけは検証不能として素通しする。ここで失敗にすると全 join が通らなくなるため)
+- **コマンドの認可**: 全コマンドは `commands/index.js` で一括して `setContexts(Guild)` を掛け、`commandMap` に入れる時点で `inGuild()` ガードで包む (登録側と実行側の二重化。過去に global 登録した分は再登録するまで DM に残るため、実行時ガードだけが効く期間がある)。個別のコマンドファイルに書かないのは、新しいコマンドで付け忘れないため。**`/join` と `/leave` は VC 操作の認可を通す** (`authorize.js`): Bot 未接続の `/join` と、Bot と同じ VC にいる人の `/join`・`/leave` は従来どおり誰でも可。**別 VC への移動と VC 外からの切断だけ `ManageGuild` または `MoveMembers` を要求する** — 無条件だと別 VC の一般ユーザーが稼働中の読み上げ (session と queue) を奪え、VC 未参加者でも読み上げを止められる。判定は `getSession()` ではなく Bot の VoiceState を見る (幽霊接続も拾うため)。**`/dict word` は運用者専用** — VOICEVOX のユーザー辞書は guildId を持たない全サーバー共通の配列で単一 Engine の全読み上げに効くため、ギルドの `ManageGuild` で許すと Guild A の管理者が Guild B の発音まで書き換えられ、list では他サーバー由来の登録語も読める。`OPERATOR_IDS` (未設定なら Bot 所有者、Team 所有ならそのメンバー) に限定し、閲覧も含めて塞ぐ。ギルド単位の `/dict replace` は従来どおり `ManageGuild`
 - **音声キュー**: guild ごとに `player.js` の `sessions` Map で管理。`MAX_QUEUE` (100) を超える enqueue は破棄 (連投対策)。`skip(guildId, all)` で再生中をスキップ (`all=true` でキュー全消し)。合成/再生に失敗した1件は `drain()` がログを出してスキップし、キュー全体は止めない
 - **効果音トリガー**: `index.js` の `SOUND_TRIGGERS` Map に完全一致文字列 → WAV ファイルパスを登録すると TTS をスキップして WAV を再生。除外フィルタ通過後にだけ評価する
 - **テキスト整形**: `textProcessor.js` でコードブロック/URL/メンション/絵文字の除去に加え、スポイラー(`||text||`、中身は読まず「ネタバレ省略」に置換)・Markdown装飾記号(`**` `__` `~~` `*` `_`、見出し`#`・引用`>`・箇条書き`-`の先頭記号)の除去(中身は読み上げる)・文末/単独の「w/ｗ」連続 (2文字以上) を「笑」に変換 (英単語中の `ww` と**直後がドットの `www.example.com` は対象外**) を行う。**処理順に意味がある**: スポイラーは URL より先に潰す (URL 正規表現が `||https://…||` の閉じ `||` まで飲み込んでスポイラーと認識できなくなるため)。閉じていない ``` フェンスは開始位置から文末まで「コード省略」にする (貼り付け途中のコードや秘密値を読み上げないため)。絵文字除去は `Extended_Pictographic` だけでなく `Regional_Indicator` (国旗)・ZWJ・異体字セレクタ・キーキャップも落とす (本体だけ消えて不可視文字が残ると `!text.trim()` が false になり「添付ファイル」案内が出ない)。末尾の切り捨てはギルド設定 `maxLength` を使い、参照時にも10〜200へクランプする。**切り捨ては必ずコードポイント単位** (`sliceByCodePoint`) — `String#slice` は UTF-16 コードユニット単位なので BMP 外文字 (𝓪 や 𠮷) の途中で切ると孤立サロゲートが残り、`voicevox.js` の `encodeURIComponent` が `URIError` を投げて発言ごと捨てられる。発言者名は `sanitizeName()` (カスタム絵文字記法→名前・絵文字除去・辞書適用・20文字カット、空になれば「誰か」) を通し、本文の切り捨て後に前置する。**VC参加/退出通知も同じ `formatAuthorName()` を使う** (辞書適用だけだとニックネームの記号が延々読まれる)

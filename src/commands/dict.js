@@ -14,7 +14,33 @@ import {
   hiraganaToKatakana,
   isKatakana,
 } from "../voicevox.js";
+import {
+  isOperator,
+  parseOperatorIds,
+  resolveOwnerIds,
+} from "../authorize.js";
 import { replyLines } from "./replyLines.js";
+import { logError } from "../log.js";
+
+// 全サーバー共通のユーザー辞書を触れる運用者。未設定なら Bot 所有者だけ。
+const operatorIds = parseOperatorIds(process.env.OPERATOR_IDS);
+
+// /dict word は guildId を持たない全サーバー共通の VOICEVOX ユーザー辞書を操作し、
+// 単一 Engine の全読み上げに効く。ギルドの ManageGuild で許すと、あるサーバーの
+// 管理者が他サーバーの発音まで書き換えられ、list では他サーバー由来の登録語も読める。
+async function isDictOperator(interaction) {
+  const application = interaction.client?.application;
+  // owner は fetch するまで埋まらない (2回目以降はキャッシュ済み)
+  if (application && !application.owner) {
+    await application.fetch().catch((err) => {
+      logError("Application の所有者を取得できませんでした", err);
+    });
+  }
+  return isOperator(interaction.user?.id, {
+    operatorIds,
+    ownerIds: resolveOwnerIds(application),
+  });
+}
 
 export const data = new SlashCommandBuilder()
   .setName("dict")
@@ -57,7 +83,7 @@ export const data = new SlashCommandBuilder()
   .addSubcommandGroup((g) =>
     g
       .setName("word")
-      .setDescription("VOICEVOXユーザー辞書 (単語+読みの正式登録、読み精度が上がります)")
+      .setDescription("VOICEVOXユーザー辞書 (全サーバー共通・Bot運用者専用)")
       .addSubcommand((s) =>
         s
           .setName("add")
@@ -101,7 +127,21 @@ export async function execute(interaction) {
   const sub = interaction.options.getSubcommand();
   const guildId = interaction.guildId;
 
-  // 登録/削除は「サーバー管理」権限を持つ人のみ (list は全員可)
+  if (group === "word") {
+    // 全サーバー共通の辞書なので、閲覧も含めて運用者に限定する
+    if (!(await isDictOperator(interaction))) {
+      await interaction.reply({
+        content:
+          "/dict word は全サーバー共通の辞書のため、Bot の運用者しか操作・閲覧できません。このサーバーだけで使う読み替えは /dict replace を使ってください。",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+    await executeWord(interaction, sub);
+    return;
+  }
+
+  // /dict replace はギルド単位なので従来どおり「サーバー管理」権限で足りる (list は全員可)
   if (sub === "add" || sub === "remove") {
     if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
       await interaction.reply({
@@ -110,11 +150,6 @@ export async function execute(interaction) {
       });
       return;
     }
-  }
-
-  if (group === "word") {
-    await executeWord(interaction, sub);
-    return;
   }
 
   // group === "replace" (デフォルトのサブコマンドグループ)
