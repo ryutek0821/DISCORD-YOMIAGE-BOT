@@ -176,17 +176,24 @@ export async function execute(interaction) {
 
   const patch = {};
   if (speaker !== null) {
-    // 指定IDが存在するか検証
+    // 指定IDが存在するか検証。検証できないまま保存すると、Engine 復旧後も
+    // そのユーザーの合成が 422 で落ち続けて発言が永久に無音になる。
+    let ids;
     try {
-      const ids = await getSpeakerIds();
-      if (!ids.includes(speaker)) {
-        await interaction.editReply(
-          `話者ID ${speaker} は存在しません。/speakers で確認してください。`
-        );
-        return;
-      }
+      ids = await getSpeakerIds();
     } catch {
-      // Engine 未起動などは検証スキップ
+      // speaker だけ捨てて他を保存すると「一部だけ効いた」状態になり分かりにくいので、
+      // 同時指定の speed/pitch/intonation ごと操作全体を拒否する (atomic)。
+      await interaction.editReply(
+        "VOICEVOXに接続できないため話者IDを確認できませんでした。設定は変更していません。しばらくしてからもう一度お試しください。"
+      );
+      return;
+    }
+    if (!ids.includes(speaker)) {
+      await interaction.editReply(
+        `話者ID ${speaker} は存在しません。/speakers で確認してください。`
+      );
+      return;
     }
     patch.speaker = speaker;
     patch.engine = "voicevox";
