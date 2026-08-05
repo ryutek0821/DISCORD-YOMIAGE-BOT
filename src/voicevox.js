@@ -16,10 +16,52 @@ const RETRY_BACKOFF_MS = [200, 400];
 // 必ず上限を設ける (CPU 合成が遅い環境でも足りるよう長めに取る)。
 const REQUEST_TIMEOUT_MS = 30_000;
 
+// 読み上げ本文は /audio_query の text、ユーザー辞書の語は /user_dict_word の
+// surface / pronunciation として **クエリ文字列に乗る**。エラーメッセージにパスを
+// そのまま埋めると、Engine が一時的に落ちるたびに Discord の発言本文が
+// URL エンコードされた形でコンテナの標準出力に残り続ける。
+// log.js も store.js も本文を残さない設計なので、ここだけ抜けているのは筋が悪い。
+const LOGGABLE_QUERY_KEYS = new Set([
+  "speaker",
+  "accent_type",
+  "priority",
+  "override",
+]);
+
+// 調査用に生のパスを出したいときだけ有効化する
+const DEBUG_LOG_TEXT = process.env.DEBUG_LOG_TEXT === "1";
+
+export function safePath(path) {
+  if (DEBUG_LOG_TEXT) return path;
+  const at = path.indexOf("?");
+  if (at === -1) return path;
+  const base = path.slice(0, at);
+  const parts = [];
+  for (const [key, value] of new URLSearchParams(path.slice(at + 1))) {
+    parts.push(
+      LOGGABLE_QUERY_KEYS.has(key)
+        ? `${key}=${value}`
+        : `${key}=<redacted:${[...value].length}文字>`
+    );
+  }
+  return parts.length > 0 ? `${base}?${parts.join("&")}` : base;
+}
+
 async function request(
   path,
-  { method = "GET", body, headers, retry = true, timeoutMs = REQUEST_TIMEOUT_MS } = {}
+  {
+    method = "GET",
+    body,
+    headers,
+    retry = true,
+    timeoutMs = REQUEST_TIMEOUT_MS,
+    // リクエストボディに本文由来のデータが乗る場合 (合成クエリ・辞書の一括投入)。
+    // FastAPI の 422 はリクエスト内容をそのまま返すため、レスポンス本文も伏せる。
+    sensitiveBody = false,
+  } = {}
 ) {
+  const logPath = safePath(path);
+  const hideResponseBody = sensitiveBody || logPath !== path;
   const backoffs = retry ? RETRY_BACKOFF_MS : [];
   const maxAttempts = 1 + backoffs.length;
   let lastErr;
@@ -32,8 +74,10 @@ async function request(
         signal: AbortSignal.timeout(timeoutMs),
       });
       if (res.ok) return res;
-      const text = await res.text().catch(() => "");
-      lastErr = new Error(`VOICEVOX ${method} ${path} -> ${res.status} ${text}`);
+      const text = hideResponseBody
+        ? "(応答本文は伏せています。DEBUG_LOG_TEXT=1 で表示)"
+        : await res.text().catch(() => "");
+      lastErr = new Error(`VOICEVOX ${method} ${logPath} -> ${res.status} ${text}`);
       if (res.status < 500) break; // クライアントエラーはリトライ対象外
     } catch (err) {
       lastErr = err;
@@ -43,7 +87,7 @@ async function request(
     }
     if (attempt < maxAttempts) {
       logError(
-        `VOICEVOX ${method} ${path} に失敗、${backoffs[attempt - 1]}ms後にリトライ (${attempt}/${maxAttempts})`,
+        `VOICEVOX ${method} ${logPath} に失敗、${backoffs[attempt - 1]}ms後にリトライ (${attempt}/${maxAttempts})`,
         lastErr
       );
       await sleep(backoffs[attempt - 1]);
@@ -96,6 +140,8 @@ export async function synth(
   const synthRes = await request(`/synthesis?speaker=${speaker}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "audio/wav" },
+    // ボディの audio_query には本文由来の kana / moras が入る
+    sensitiveBody: true,
     body: JSON.stringify(query),
   });
   const wav = Buffer.from(await synthRes.arrayBuffer());
@@ -187,6 +233,8 @@ export async function importUserDict(entries) {
   await request("/import_user_dict?override=true", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    // ボディは辞書の語そのもの
+    sensitiveBody: true,
     body: JSON.stringify(dict),
   });
 }
