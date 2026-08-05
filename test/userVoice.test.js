@@ -6,7 +6,8 @@ useTempDataDir({
   "guildSettings.json": { g1: { speaker: 7 } },
   "userSettings.json": {
     // 個人設定あり (VOICEVOX)
-    100: { speaker: 11, speed: 1.5, pitch: 0.2, intonation: 0.5 },
+    // pitch は /voice の許容範囲 (-0.15〜0.15) 内の値を使う。範囲外はスキーマ検証が落とす
+    100: { speaker: 11, speed: 1.5, pitch: 0.1, intonation: 0.5 },
     // Fish を明示指定したユーザー
     200: { engine: "fish", fishRef: "f".repeat(32), fishEmotion: "happy" },
   },
@@ -28,7 +29,7 @@ describe("個人設定の優先", () => {
       fishRef: null,
       fishEmotion: null,
       speed: 1.5,
-      pitch: 0.2,
+      pitch: 0.1,
       intonation: 0.5,
     });
   });
