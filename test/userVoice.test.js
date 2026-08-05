@@ -14,13 +14,16 @@ useTempDataDir({
 
 const { resolveUserVoice } = await import("../src/userVoice.js");
 
-const SPEAKERS = [{ name: "s", styles: [{ id: 2 }, { id: 3 }, { id: 5 }] }];
+const SPEAKERS = [{ name: "s", styles: [{ id: 2 }, { id: 3 }, { id: 5 }, { id: 11 }] }];
 
 let stub;
 afterEach(() => stub?.restore());
 
 describe("個人設定の優先", () => {
   test("/voice の設定をそのまま返す", async () => {
+    // 明示指定の話者も存在確認を通るので、必ず話者一覧を stub しておく
+    // (stub し忘れると実 Engine に繋ぎに行ってしまう)
+    stub = stubFetch(() => jsonResponse(SPEAKERS));
     const v = await resolveUserVoice("100", "g1");
     assert.deepEqual(v, {
       engine: "voicevox",
@@ -33,7 +36,7 @@ describe("個人設定の優先", () => {
     });
   });
 
-  test("個人設定があれば VOICEVOX へ問い合わせない", async () => {
+  test("話者一覧がキャッシュ済みなら問い合わせ直さない", async () => {
     stub = stubFetch(() => jsonResponse(SPEAKERS));
     await resolveUserVoice("100", "g1");
     assert.equal(stub.calls.length, 0);
@@ -46,8 +49,8 @@ describe("未設定ユーザーの自動割り当て", () => {
     const a = await resolveUserVoice("12345678901234567", "g1");
     const b = await resolveUserVoice("12345678901234567", "g1");
     assert.equal(a.speaker, b.speaker);
-    // 12345678901234567 % 3 === 1 -> ids[1] === 3
-    assert.equal(a.speaker, 3);
+    // 12345678901234567 % 4 === 3 -> ids[3] === 11
+    assert.equal(a.speaker, 11);
   });
 
   test("速度・pitch・intonation は既定値になる", async () => {
