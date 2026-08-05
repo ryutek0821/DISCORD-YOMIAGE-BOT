@@ -61,6 +61,22 @@ const readChannels = new Map(
     .filter(([g, c]) => g && c)
 );
 
+// イベントハンドラの最終防衛ライン。process の unhandledRejection まで届けば稼働は
+// 続くが、どのイベントで落ちたのかがログから追えない。ハンドラ単位で包んで、
+// 1件の不正データや一時的な例外を発生源つきで握り潰す。
+function guard(name, handler) {
+  return (...args) => {
+    try {
+      const result = handler(...args);
+      if (typeof result?.catch === "function") {
+        result.catch((err) => logError(`${name} の処理に失敗しました`, err));
+      }
+    } catch (err) {
+      logError(`${name} の処理に失敗しました`, err);
+    }
+  };
+}
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -131,7 +147,9 @@ async function rejoinActiveChannels(c) {
   }
 }
 
-client.on(Events.InteractionCreate, async (interaction) => {
+client.on(Events.InteractionCreate, guard("InteractionCreate", onInteraction));
+
+async function onInteraction(interaction) {
   if (!interaction.isChatInputCommand()) return;
   const command = commandMap.get(interaction.commandName);
   if (!command) return;
@@ -149,9 +167,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await interaction.reply({ content, flags: MessageFlags.Ephemeral }).catch(() => {});
     }
   }
-});
+}
 
-client.on(Events.MessageCreate, async (message) => {
+client.on(Events.MessageCreate, guard("MessageCreate", onMessage));
+
+async function onMessage(message) {
   if (!message.guild) return;
   const guildId = message.guild.id;
   if (message.author.id === client.user.id) return;
@@ -204,9 +224,11 @@ client.on(Events.MessageCreate, async (message) => {
   if (enqueue(guildId, text, voice) && speakerState) {
     lastSpeaker.set(guildId, speakerState);
   }
-});
+}
 
-client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
+client.on(Events.VoiceStateUpdate, guard("VoiceStateUpdate", onVoiceStateUpdate));
+
+async function onVoiceStateUpdate(oldState, newState) {
   const guildId = newState.guild.id;
   const member = newState.member;
   if (member?.user?.bot) return; // Bot 自身の状態変化は無視
@@ -266,6 +288,6 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
   if (left && botChannelId && left.id === botChannelId && getSession(guildId)) {
     if (humanCount(left) === 0) leave(guildId);
   }
-});
+}
 
 client.login(DISCORD_TOKEN);
