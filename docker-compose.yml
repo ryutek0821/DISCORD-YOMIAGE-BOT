@@ -1,6 +1,11 @@
 services:
   voicevox_engine:
-    image: voicevox/voicevox_engine:cpu-latest
+    # cpu-latest だと engine 更新でスタイルIDの件数と並び順が変わり、userVoice.js の
+    # `userId % ids.length` による自動割り当てが総入れ替わりする (/voice 未設定ユーザーの声が
+    # 全員変わる)。廃止されたスタイルIDを /voice で保存済みのユーザーは合成が 422 で落ちる。
+    # そのため更新は意図的に行う。手順は CLAUDE.md の「Docker 運用」を参照。
+    # 0.25.2 は 2026-08-05 時点の稼働バージョン (スタイル127件) で、固定しても現状の声は変わらない。
+    image: voicevox/voicevox_engine:cpu-0.25.2
     container_name: voicevox_engine
     # Bot はサービス名 voicevox_engine:50021 で内部到達するため外部公開は不要。
     # VOICEVOX の HTTP API は認証が無く、辞書変更も /synthesis による CPU 占有もできてしまうので、
