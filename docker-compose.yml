@@ -8,6 +8,11 @@ services:
     ports:
       - "127.0.0.1:50021:50021"
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   bot:
     build: .
@@ -23,3 +28,11 @@ services:
     depends_on:
       - voicevox_engine
     restart: unless-stopped
+    # 既定の json-file ドライバは上限を指定しないと無制限に肥大し、restart: unless-stopped で
+    # 常駐する両サービスのログが削除されるまで積み上がる。ディスクが埋まると store.js の設定書き込みが
+    # ENOSPC で失敗して /join などが落ちるため、上限を掛ける。
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

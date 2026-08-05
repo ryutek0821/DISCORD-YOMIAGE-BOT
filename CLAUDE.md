@@ -122,3 +122,7 @@ Claude Code / Codex はこのリポジトリで PR を直接作らない。変�
 `.github/ISSUE_TEMPLATE/agent-proposal.yml` の形式で issue を起票し、そこで止まる
 （実装・ブランチ作成・PR は人が明示的に指示してから）。
 詳細は `~/.claude/CLAUDE.md` / `~/.codex/AGENTS.md` の「GitHub 運用方針」を参照。
+
+## Docker 運用
+
+- **ログは 10MB × 3 世代でローテート**: 両サービスに `logging` を設定済み。`logging` は再作成が必要な項目なので、変更を反映するには `docker compose up -d` でコンテナを作り直す（engine を作り直すと VOICEVOX 側の user_dict は消えるが、Bot 起動時の復元処理が入れ直す）。
