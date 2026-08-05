@@ -16,7 +16,7 @@ import {
 import { synthVoice } from "./tts.js";
 import { getGuildSettings } from "./store.js";
 import { waitForBotChannel } from "./channels.js";
-import { logError } from "./log.js";
+import { log, logError } from "./log.js";
 import { resolveUserVoice } from "./userVoice.js";
 
 // guildId -> { connection, player, queue, playing, ffmpeg }
@@ -34,6 +34,13 @@ const wiredConnections = new WeakSet();
 
 // 連投時にキューが無制限に伸びるのを防ぐ上限
 const MAX_QUEUE = 100;
+
+// close code 4006/1006 では @discordjs/voice が Disconnected を経由せず
+// Signalling へ直接遷移して join payload を再送するだけになる。それが Ready へ
+// 戻らないまま滞留すると、session は残るのでメッセージは enqueue され続けるが
+// player は AutoPaused のままになり「VC に居るのに一切喋らない」状態になる。
+// このしきい値だけ Ready 以外が続いたら見切って破棄する。
+const READY_WATCHDOG_MS = 30_000;
 
 export function getSession(guildId) {
   return sessions.get(guildId);
@@ -139,11 +146,39 @@ async function doJoin(channel) {
 
     // 破棄されたらセッションを掃除する (どの世代の session でも拾えるよう connection で判定)
     connection.on(VoiceConnectionStatus.Destroyed, () => {
+      clearReadyWatchdog();
       const current = sessions.get(guildId);
       if (current?.connection === connection) {
         discardSession(current);
         sessions.delete(guildId);
       }
+    });
+
+    // Ready へ戻らないまま滞留する接続のウォッチドッグ。4014 以外の close code は
+    // Disconnected を経由しないため上の再接続ロジックが働かず、検知する仕組みが
+    // 他に無い。Ready になったら解除し、それ以外の状態が続いたら見切って破棄する
+    // (数秒で戻る通常の再接続はしきい値に達しないので影響しない)。
+    // 破棄後は Destroyed ハンドラが session を掃除するので、VoiceStateUpdate の
+    // 自動参加が人のいる VC として検知し直して自然に復帰できる。
+    let readyWatchdog = null;
+    function clearReadyWatchdog() {
+      if (readyWatchdog) {
+        clearTimeout(readyWatchdog);
+        readyWatchdog = null;
+      }
+    }
+    connection.on("stateChange", (_oldState, newState) => {
+      if (newState.status === VoiceConnectionStatus.Ready) {
+        clearReadyWatchdog();
+        return;
+      }
+      if (readyWatchdog) return;
+      readyWatchdog = setTimeout(() => {
+        readyWatchdog = null;
+        log(`30秒以上 Ready に戻らないため接続を破棄します (guild: ${guildId})`);
+        destroyQuietly(connection);
+      }, READY_WATCHDOG_MS);
+      readyWatchdog.unref();
     });
   }
 
