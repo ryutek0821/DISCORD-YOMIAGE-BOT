@@ -137,4 +137,5 @@ Claude Code / Codex はこのリポジトリで PR を直接作らない。変�
 
 ## Docker 運用
 
+- **engine イメージはタグ固定**: `docker-compose.yml` は `voicevox/voicevox_engine:cpu-0.25.2` に固定してある。バージョンを上げるときは、上げる前に `curl -s localhost:50021/speakers | jq '[.[].styles[].id]'` を記録し、更新後に件数と並び順を比較する。変わっていれば `/voice` 未設定ユーザーの自動割り当て (`userVoice.js` の `userId % ids.length`) が総入れ替わりするので、事前にユーザーへ周知するか各自 `/voice speaker:` で固定してもらう。廃止されたスタイルIDを保存済みのユーザーは既定話者へフォールバックする（起動後のログに警告が出る）。
 - **ログは 10MB × 3 世代でローテート**: 両サービスに `logging` を設定済み。`logging` は再作成が必要な項目なので、変更を反映するには `docker compose up -d` でコンテナを作り直す（engine を作り直すと VOICEVOX 側の user_dict は消えるが、Bot 起動時の復元処理が入れ直す）。
