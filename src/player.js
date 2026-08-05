@@ -9,6 +9,7 @@ import {
   StreamType,
   AudioPlayerStatus,
   VoiceConnectionStatus,
+  NoSubscriberBehavior,
   entersState,
   getVoiceConnection,
 } from "@discordjs/voice";
@@ -18,7 +19,8 @@ import { waitForBotChannel } from "./channels.js";
 import { logError } from "./log.js";
 import { resolveUserVoice } from "./userVoice.js";
 
-// guildId -> { connection, player, queue, playing }
+// guildId -> { connection, player, queue, playing, ffmpeg }
+// ffmpeg は現在再生中(または再生準備中)の子プロセス。無ければ null。
 const sessions = new Map();
 
 // 同一ギルドへの join が同時に走らないようにする。
@@ -82,8 +84,7 @@ async function doJoin(channel) {
   const previous = sessions.get(guildId);
   if (previous) {
     sessions.delete(guildId);
-    previous.queue = [];
-    previous.player.stop(true);
+    discardSession(previous);
   }
 
   const connection = joinVoiceChannel({
@@ -93,10 +94,15 @@ async function doJoin(channel) {
     selfDeaf: true,
   });
 
-  const player = createAudioPlayer();
+  // 購読者 (player) を失った際の既定動作は Pause。VC を離れた/移動した後も
+  // AudioPlayer が Paused のまま生き残ると、次の subscribe まで resource と
+  // その裏の ffmpeg プロセスを掴んだままになるため、Stop に倒しておく。
+  const player = createAudioPlayer({
+    behaviors: { noSubscriber: NoSubscriberBehavior.Stop },
+  });
   connection.subscribe(player);
 
-  const session = { connection, player, queue: [], playing: false };
+  const session = { connection, player, queue: [], playing: false, ffmpeg: null };
 
   player.on(AudioPlayerStatus.Idle, () => {
     session.playing = false;
@@ -135,7 +141,7 @@ async function doJoin(channel) {
     connection.on(VoiceConnectionStatus.Destroyed, () => {
       const current = sessions.get(guildId);
       if (current?.connection === connection) {
-        current.queue = [];
+        discardSession(current);
         sessions.delete(guildId);
       }
     });
@@ -177,7 +183,7 @@ function destroyQuietly(connection) {
 export function leave(guildId) {
   const session = sessions.get(guildId);
   if (session) {
-    session.queue = [];
+    discardSession(session);
     destroyQuietly(session.connection);
     sessions.delete(guildId);
     return true;
@@ -190,17 +196,45 @@ export function leave(guildId) {
   return false;
 }
 
+// 再生中の音声を止める (queue はそのまま)。player.stop(true) は購読者を
+// 残したまま強制的に Idle へ落とし、生きている ffmpeg も kill する。
+// kill() は既に終了したプロセスに対しても呼べるが、念のため try/catch で包む。
+function stopCurrentAudio(session) {
+  session.player.stop(true);
+  try {
+    session.ffmpeg?.kill();
+  } catch {
+    /* 既に終了済み */
+  }
+}
+
+// queue を含めてセッションの再生リソースを丸ごと畳む。
+// leave / VC移動 / connection の破棄など「このセッションはもう使わない」
+// タイミングで呼ぶ (skip はキューを残す挙動があるためこちらは使わない)。
+function discardSession(session) {
+  session.queue = [];
+  stopCurrentAudio(session);
+}
+
 // 再生中の読み上げをスキップする。all=true ならキューも空にする。
 // player.stop() で Idle イベントが発火し、drain() が次のキューを再生する。
+// stop() だけだと合成待ち～再生中の古い ffmpeg が残りうるため kill も行う。
 export function skip(guildId, all = false) {
   const session = sessions.get(guildId);
   if (!session) return false;
   if (all) session.queue = [];
-  return session.player.stop();
+  const result = session.player.stop();
+  try {
+    session.ffmpeg?.kill();
+  } catch {
+    /* 既に終了済み */
+  }
+  return result;
 }
 
 // 音声 Buffer を ffmpeg で Opus に変換しつつ再生 (volume: 0.0〜1.0、デフォルト 1.0)。
 // 入力フォーマットは指定せず ffmpeg の自動判別に任せる (現状はどのエンジンも WAV)。
+// 呼び出し側 (drain) が session.ffmpeg を保持できるよう、生成した子プロセスも返す。
 function audioToResource(audio, volume = 1.0) {
   const args = [
     "-i", "pipe:0",
@@ -222,7 +256,8 @@ function audioToResource(audio, volume = 1.0) {
   });
   Readable.from(audio).pipe(ff.stdin);
   ff.stdin.on("error", () => {});
-  return createAudioResource(ff.stdout, { inputType: StreamType.Raw });
+  const resource = createAudioResource(ff.stdout, { inputType: StreamType.Raw });
+  return { resource, ff };
 }
 
 async function drain(guildId) {
@@ -248,7 +283,17 @@ async function drain(guildId) {
       }
       audio = await synthVoice(guildId, next.text, voice ?? getGuildSettings(guildId));
     }
-    session.player.play(audioToResource(audio, volume));
+    // 合成待ちの間に /leave や VC 移動でこの session が捨てられていることがある。
+    // 世代を確認せずに resource/ffmpeg を作ると、古い世代の音声が新しい session
+    // (または誰も購読していない player) に向けて再生され、ffmpeg プロセスだけ
+    // 無駄に起動することになる。
+    if (sessions.get(guildId) !== session) return;
+    const { resource, ff } = audioToResource(audio, volume);
+    session.ffmpeg = ff;
+    ff.on("exit", () => {
+      if (session.ffmpeg === ff) session.ffmpeg = null;
+    });
+    session.player.play(resource);
   } catch (err) {
     // 合成/再生に失敗した1件だけスキップして次のキューへ進む (エンジン一時不通などで全体を止めない)
     logError(`再生に失敗したためスキップします (guild: ${guildId})`, err);
