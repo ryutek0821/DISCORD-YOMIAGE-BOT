@@ -4,6 +4,8 @@ import {
   updateGuildSettings,
   resetGuildSettings,
 } from "../store.js";
+import { ja } from "./i18n.js";
+import { ignoreGroup, executeIgnore } from "./ignoreSettings.js";
 
 const AUTHOR_MODE_LABELS = {
   off: "OFF",
@@ -15,21 +17,27 @@ export const data = new SlashCommandBuilder()
   .setName("config")
   .setDescription("サーバーの読み上げ挙動を設定します")
   .addSubcommand((s) =>
-    s.setName("show").setDescription("現在の読み上げ設定を表示します")
+    s
+      .setName("show")
+      .setNameLocalizations(ja("確認"))
+      .setDescription("今の読み上げ設定を表示します")
   )
   .addSubcommand((s) =>
     s
       .setName("set")
+      .setNameLocalizations(ja("変更"))
       .setDescription("読み上げ設定を変更します")
       .addBooleanOption((o) =>
         o
           .setName("announce_voice_state")
-          .setDescription("VC参加・退出を読み上げる")
+          .setNameLocalizations(ja("参加退出の読み上げ"))
+          .setDescription("ONにすると誰かのVC参加・退出を読み上げます")
       )
       .addStringOption((o) =>
         o
           .setName("read_author_name")
-          .setDescription("発言者名を読み上げる条件")
+          .setNameLocalizations(ja("発言者名の読み上げ"))
+          .setDescription("本文の前に発言者名を付けるかどうか")
           .addChoices(
             { name: "読み上げない", value: "off" },
             { name: "発言者が変わったときだけ", value: "changed" },
@@ -39,14 +47,16 @@ export const data = new SlashCommandBuilder()
       .addIntegerOption((o) =>
         o
           .setName("max_length")
-          .setDescription("本文の最大文字数 (10〜200)")
+          .setNameLocalizations(ja("最大文字数"))
+          .setDescription("これより長い本文は切り捨てます (10〜200、標準50)")
           .setMinValue(10)
           .setMaxValue(200)
       )
       .addIntegerOption((o) =>
         o
           .setName("fish_daily_bytes")
-          .setDescription("Fish Audio の1日あたり送信バイト上限 (0=無制限)")
+          .setNameLocalizations(ja("fishの1日上限"))
+          .setDescription("Fish Audioに1日で送れるバイト数 (0=無制限、標準50000)")
           .setMinValue(0)
           .setMaxValue(2000000)
       )
@@ -54,33 +64,44 @@ export const data = new SlashCommandBuilder()
   .addSubcommand((s) =>
     s
       .setName("channels")
+      .setNameLocalizations(ja("対象チャンネル"))
       .setDescription("読み上げ対象チャンネルを変更します (スレッドは親chの設定に従います)")
       .addChannelOption((o) =>
         o
           .setName("add")
+          .setNameLocalizations(ja("追加"))
           .setDescription("対象に追加するチャンネル (配下のスレッドも対象になります)")
           .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
       )
       .addChannelOption((o) =>
         o
           .setName("remove")
-          .setDescription("対象から削除するチャンネル")
+          .setNameLocalizations(ja("削除"))
+          .setDescription("対象から外すチャンネル")
           .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
       )
       .addStringOption((o) =>
         o
           .setName("remove_id")
-          .setDescription("削除済みチャンネルをIDで対象から外す")
+          .setNameLocalizations(ja("id指定で削除"))
+          .setDescription("削除済みチャンネルをIDで外す (選択欄に出てこないため)")
           .setMinLength(1)
           .setMaxLength(30)
       )
       .addBooleanOption((o) =>
-        o.setName("clear").setDescription("明示指定をすべて消す")
+        o
+          .setName("clear")
+          .setNameLocalizations(ja("すべて解除"))
+          .setDescription("ONにすると対象chの明示指定をすべて消します")
       )
   )
   .addSubcommand((s) =>
-    s.setName("reset").setDescription("読み上げ設定を既定値に戻します")
-  );
+    s
+      .setName("reset")
+      .setNameLocalizations(ja("リセット"))
+      .setDescription("読み上げ設定を既定値に戻します")
+  )
+  .addSubcommandGroup(ignoreGroup);
 
 function effectiveMaxLength(value) {
   if (typeof value !== "number" || !Number.isFinite(value)) return 50;
@@ -128,11 +149,20 @@ async function replySettings(interaction, prefix) {
   await interaction.reply({ content, flags: MessageFlags.Ephemeral });
 }
 
-// /config は全ユーザーが変更できる (ManageGuild は要求しない)。
-// 制限したくなった場合は Discord 側の「連携サービス」設定でコマンド単位に権限を掛けるか、
-// /dict や /ignore と同じ hasManageGuild ガードをここに戻す。
+// /config 直下の show/set/channels/reset は全ユーザーが変更できる
+// (ManageGuild は要求しない)。制限したくなった場合は Discord 側の「連携サービス」設定で
+// コマンド単位に権限を掛けるか、/dict と同じ hasManageGuild ガードをここに足す。
+// 配下の ignore グループだけは ignoreSettings.js 側がサブコマンド単位で権限を見る
+// (user/prefix/bots は ManageGuild が要る)。
 export async function execute(interaction) {
+  const group = interaction.options.getSubcommandGroup();
   const sub = interaction.options.getSubcommand();
+
+  if (group === "ignore") {
+    await executeIgnore(interaction, sub);
+    return;
+  }
+
   if (sub === "show") {
     await replySettings(interaction);
     return;

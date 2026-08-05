@@ -1,8 +1,7 @@
-import {
-  MessageFlags,
-  PermissionFlagsBits,
-  SlashCommandBuilder,
-} from "discord.js";
+// /config ignore … — 読み上げ除外の設定 (旧 /ignore)。
+// 「読み上げを減らす」操作は /config の VC参加通知ON/OFF や最大文字数と同じ性質なので、
+// トップレベルに別コマンドを立てず /config の配下に置いてある。
+import { MessageFlags, PermissionFlagsBits } from "discord.js";
 import {
   addIgnorePrefix,
   addIgnoreUser,
@@ -14,64 +13,96 @@ import {
   updateUserSettings,
 } from "../store.js";
 import { replyLines } from "./replyLines.js";
+import { ja } from "./i18n.js";
 
 const ACTION_CHOICES = [
   { name: "追加", value: "add" },
   { name: "削除", value: "remove" },
 ];
 
-export const data = new SlashCommandBuilder()
-  .setName("ignore")
-  .setDescription("読み上げない発言を設定します")
-  .addSubcommand((s) =>
-    s
-      .setName("user")
-      .setDescription("ユーザーを除外リストへ追加・削除します")
-      .addUserOption((o) =>
-        o.setName("target").setDescription("対象ユーザー").setRequired(true)
-      )
-      .addStringOption((o) =>
-        o
-          .setName("action")
-          .setDescription("操作")
-          .setRequired(true)
-          .addChoices(...ACTION_CHOICES)
-      )
-  )
-  .addSubcommand((s) =>
-    s
-      .setName("prefix")
-      .setDescription("この文字から始まる発言を除外します")
-      .addStringOption((o) =>
-        o.setName("value").setDescription("1〜10文字").setRequired(true)
-      )
-      .addStringOption((o) =>
-        o
-          .setName("action")
-          .setDescription("操作")
-          .setRequired(true)
-          .addChoices(...ACTION_CHOICES)
-      )
-  )
-  .addSubcommand((s) =>
-    s
-      .setName("bots")
-      .setDescription("他Botの発言を読み上げるか設定します")
-      .addBooleanOption((o) =>
-        o.setName("read").setDescription("読み上げる").setRequired(true)
-      )
-  )
-  .addSubcommand((s) =>
-    s
-      .setName("me")
-      .setDescription("自分の発言とVC参加・退出通知をミュートします")
-      .addBooleanOption((o) =>
-        o.setName("mute").setDescription("ミュートする").setRequired(true)
-      )
-  )
-  .addSubcommand((s) =>
-    s.setName("list").setDescription("現在の除外設定を表示します")
-  );
+// ManageGuild を要求するサブコマンド。me は個人設定 (userSettings.mute)、
+// list は閲覧のみなので誰でも実行できる。
+const MANAGE_GUILD_SUBS = ["user", "prefix", "bots"];
+
+export const ignoreGroup = (g) =>
+  g
+    .setName("ignore")
+    .setNameLocalizations(ja("読み上げ除外"))
+    .setDescription("読み上げない発言を設定します")
+    .addSubcommand((s) =>
+      s
+        .setName("user")
+        .setNameLocalizations(ja("ユーザー"))
+        .setDescription("指定ユーザーの発言を読み上げない (要サーバー管理)")
+        .addUserOption((o) =>
+          o
+            .setName("target")
+            .setNameLocalizations(ja("対象ユーザー"))
+            .setDescription("読み上げたくないユーザー")
+            .setRequired(true)
+        )
+        .addStringOption((o) =>
+          o
+            .setName("action")
+            .setNameLocalizations(ja("操作"))
+            .setDescription("除外リストへ追加するか、除外を解除するか")
+            .setRequired(true)
+            .addChoices(...ACTION_CHOICES)
+        )
+    )
+    .addSubcommand((s) =>
+      s
+        .setName("prefix")
+        .setNameLocalizations(ja("先頭文字"))
+        .setDescription("この文字で始まる発言を読み上げない (要サーバー管理)")
+        .addStringOption((o) =>
+          o
+            .setName("value")
+            .setNameLocalizations(ja("文字列"))
+            .setDescription("発言の先頭に付く文字列 (1〜10文字)")
+            .setRequired(true)
+        )
+        .addStringOption((o) =>
+          o
+            .setName("action")
+            .setNameLocalizations(ja("操作"))
+            .setDescription("除外リストへ追加するか、除外を解除するか")
+            .setRequired(true)
+            .addChoices(...ACTION_CHOICES)
+        )
+    )
+    .addSubcommand((s) =>
+      s
+        .setName("bots")
+        .setNameLocalizations(ja("bot発言"))
+        .setDescription("他のBotの発言を読み上げるか決めます (要サーバー管理)")
+        .addBooleanOption((o) =>
+          o
+            .setName("read")
+            .setNameLocalizations(ja("読み上げる"))
+            .setDescription("ONにすると他のBotの発言も読み上げます")
+            .setRequired(true)
+        )
+    )
+    .addSubcommand((s) =>
+      s
+        .setName("me")
+        .setNameLocalizations(ja("自分"))
+        .setDescription("自分の発言とVC参加・退出通知をミュートします (全サーバー共通)")
+        .addBooleanOption((o) =>
+          o
+            .setName("mute")
+            .setNameLocalizations(ja("ミュートする"))
+            .setDescription("ONにすると自分の発言が読み上げられなくなります")
+            .setRequired(true)
+        )
+    )
+    .addSubcommand((s) =>
+      s
+        .setName("list")
+        .setNameLocalizations(ja("一覧"))
+        .setDescription("今の除外設定を表示します")
+    );
 
 function hasManageGuild(interaction) {
   return interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
@@ -85,11 +116,13 @@ async function reply(interaction, content, extra = {}) {
   });
 }
 
-export async function execute(interaction) {
-  const sub = interaction.options.getSubcommand();
+export async function executeIgnore(interaction, sub) {
   const guildId = interaction.guildId;
 
-  if (["user", "prefix", "bots"].includes(sub) && !hasManageGuild(interaction)) {
+  // /config 自体は全ユーザーが変更できるが、除外設定はサブコマンド単位で権限が違う。
+  // コマンド単位のガードに丸めると user/prefix/bots が誰でも触れるようになるので、
+  // ここでサブコマンドごとに見る。
+  if (MANAGE_GUILD_SUBS.includes(sub) && !hasManageGuild(interaction)) {
     await reply(interaction, "この操作には「サーバー管理」権限が必要です。");
     return;
   }

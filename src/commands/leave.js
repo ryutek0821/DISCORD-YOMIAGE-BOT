@@ -5,7 +5,7 @@ import { updateGuildSettings } from "../store.js";
 
 export const data = new SlashCommandBuilder()
   .setName("leave")
-  .setDescription("ボイスチャンネルから退出します");
+  .setDescription("ボイスチャンネルから退出して読み上げをやめます");
 
 export async function execute(interaction) {
   // VC未参加者でも読み上げを止められてしまうため、VC外からの切断は明示権限に限る。

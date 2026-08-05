@@ -14,77 +14,105 @@ import {
   getFishVoices,
 } from "../store.js";
 import { resolveUserVoice } from "../userVoice.js";
+import { ja } from "./i18n.js";
+import { listSubcommand, executeList } from "./voiceList.js";
+import { fishGroup, executeFish } from "./fishAdmin.js";
 
 // Fish の感情タグ (S2系モデルのみ有効)。自由入力にすると、タグとして解釈されない
 // 文字列がそのまま読み上げられ、しかも課金バイトに乗るので choices で固定する。
 const EMOTION_OFF = "off";
 const EMOTION_CHOICES = [
-  { name: "happy (明るい)", value: "happy" },
-  { name: "sad (悲しい)", value: "sad" },
-  { name: "excited (興奮)", value: "excited" },
-  { name: "angry (怒り)", value: "angry" },
-  { name: "surprised (驚き)", value: "surprised" },
-  { name: "whisper (ささやき)", value: "whisper" },
-  { name: "laugh (笑い)", value: "laugh" },
-  { name: "sigh (ため息)", value: "sigh" },
-  { name: "gasp (息をのむ)", value: "gasp" },
-  { name: "emphasis (強調)", value: "emphasis" },
-  { name: "(解除)", value: EMOTION_OFF },
+  { name: "明るい (happy)", value: "happy" },
+  { name: "悲しい (sad)", value: "sad" },
+  { name: "興奮 (excited)", value: "excited" },
+  { name: "怒り (angry)", value: "angry" },
+  { name: "驚き (surprised)", value: "surprised" },
+  { name: "ささやき (whisper)", value: "whisper" },
+  { name: "笑い (laugh)", value: "laugh" },
+  { name: "ため息 (sigh)", value: "sigh" },
+  { name: "息をのむ (gasp)", value: "gasp" },
+  { name: "強調 (emphasis)", value: "emphasis" },
+  { name: "指定しない (解除)", value: EMOTION_OFF },
 ];
 
+// 声まわりの操作は /voice に集約してある。
+// 以前は /voice (自分の設定) / /speakers (話者一覧) / /fishvoice (Fishボイス管理) の
+// 3コマンドに分かれていたが、後ろ2つは「/voice に何を入れるか」を調べるためだけの
+// コマンドで、単独では意味を持たなかった。
 export const data = new SlashCommandBuilder()
   .setName("voice")
-  .setDescription("自分の読み上げ話者・速度・声の高さ・抑揚を設定します")
-  .addIntegerOption((o) =>
-    o
-      .setName("speaker")
-      .setDescription("話者(スタイル)ID。/speakers で一覧を確認")
-      .setMinValue(0)
-  )
-  .addStringOption((o) =>
-    o
-      .setName("fish")
-      .setDescription(
-        "Fish Audio のボイス。/fishvoice list のエイリアス、または reference_id"
+  .setDescription("自分の声を設定します")
+  .addSubcommand((s) =>
+    s
+      .setName("set")
+      .setNameLocalizations(ja("設定"))
+      .setDescription("自分の話者・速度・声の高さ・抑揚を変更します")
+      .addIntegerOption((o) =>
+        o
+          .setName("speaker")
+          .setNameLocalizations(ja("話者"))
+          .setDescription("VOICEVOXの話者(スタイル)ID。/voice list で確認できます")
+          .setMinValue(0)
       )
-      .setMaxLength(50)
+      .addStringOption((o) =>
+        o
+          .setName("fish")
+          .setNameLocalizations(ja("fishボイス"))
+          .setDescription(
+            "Fish Audio のボイス。呼び出し名 (/voice list で確認) か reference_id"
+          )
+          .setMaxLength(50)
+      )
+      .addNumberOption((o) =>
+        o
+          .setName("speed")
+          .setNameLocalizations(ja("速度"))
+          .setDescription("読み上げ速度 (0.5〜2.0、標準1.0)")
+          .setMinValue(0.5)
+          .setMaxValue(2.0)
+      )
+      .addNumberOption((o) =>
+        o
+          .setName("pitch")
+          .setNameLocalizations(ja("声の高さ"))
+          .setDescription("声の高さ (-0.15〜0.15、標準0.0)。VOICEVOXのみ有効")
+          .setMinValue(-0.15)
+          .setMaxValue(0.15)
+      )
+      .addNumberOption((o) =>
+        o
+          .setName("intonation")
+          .setNameLocalizations(ja("抑揚"))
+          .setDescription("抑揚の強さ (0.0〜2.0、標準1.0)。Fishでは声の揺らぎになります")
+          .setMinValue(0.0)
+          .setMaxValue(2.0)
+      )
+      .addStringOption((o) =>
+        o
+          .setName("fish_emotion")
+          .setNameLocalizations(ja("感情"))
+          .setDescription("話し方の感情。Fishボイスを選んでいるときだけ効きます")
+          .addChoices(...EMOTION_CHOICES)
+      )
   )
-  .addNumberOption((o) =>
-    o
-      .setName("speed")
-      .setDescription("読み上げ速度 (0.5〜2.0)")
-      .setMinValue(0.5)
-      .setMaxValue(2.0)
+  .addSubcommand((s) =>
+    s
+      .setName("show")
+      .setNameLocalizations(ja("確認"))
+      .setDescription("今の自分の声の設定を表示します")
   )
-  .addNumberOption((o) =>
-    o
-      .setName("pitch")
-      .setDescription("声の高さ (-0.15〜0.15、標準0)")
-      .setMinValue(-0.15)
-      .setMaxValue(0.15)
-  )
-  .addNumberOption((o) =>
-    o
-      .setName("intonation")
-      .setDescription("抑揚の強さ (0.0〜2.0、標準1.0)。Fishでは声の揺らぎに換算されます")
-      .setMinValue(0.0)
-      .setMaxValue(2.0)
-  )
-  .addStringOption((o) =>
-    o
-      .setName("fish_emotion")
-      .setDescription("Fish Audio の感情・話し方 (Fishボイスのときだけ効きます)")
-      .addChoices(...EMOTION_CHOICES)
-  )
-  .addBooleanOption((o) =>
-    o
+  .addSubcommand((s) =>
+    s
       .setName("reset")
-      .setDescription("自分の設定を消して自動(ランダム割り当て)に戻す")
-  );
+      .setNameLocalizations(ja("リセット"))
+      .setDescription("自分の設定を消して自動(ランダム割り当て)に戻します")
+  )
+  .addSubcommand(listSubcommand)
+  .addSubcommandGroup(fishGroup);
 
 // 入力から Fish の reference_id を引く。見つからなければ null。
 // 登録済みボイスは全ユーザー共通なので、誰が登録したものでも誰でも指定できる。
-// /fishvoice list の表示 (「エイリアス: 表示名」) をどちらの側で打っても通るようにし、
+// /voice list の表示 (「エイリアス: 表示名」) をどちらの側で打っても通るようにし、
 // 大文字小文字も無視する (add 時に alias を小文字化しているため、完全一致だと
 // `Jyounetsu` のような入力が弾かれてしまう)。
 function resolveFishInput(input) {
@@ -127,21 +155,28 @@ function describeVoice(eff, note = "") {
 }
 
 export async function execute(interaction) {
-  const speaker = interaction.options.getInteger("speaker");
-  const fish = interaction.options.getString("fish");
-  const speed = interaction.options.getNumber("speed");
-  const pitch = interaction.options.getNumber("pitch");
-  const intonation = interaction.options.getNumber("intonation");
-  const fishEmotion = interaction.options.getString("fish_emotion");
-  const reset = interaction.options.getBoolean("reset");
+  const group = interaction.options.getSubcommandGroup();
+  const sub = interaction.options.getSubcommand();
+
+  // fish add/remove は自前で reply/defer するので先に振り分ける
+  if (group === "fish") {
+    await executeFish(interaction, sub);
+    return;
+  }
+
+  if (sub === "list") {
+    await executeList(interaction);
+    return;
+  }
+
   const userId = interaction.user.id;
 
-  // どの分岐も VOICEVOX への問い合わせ (話者一覧) を挟みうる。Engine の応答が遅いと
-  // 3秒の一次応答期限を超えて interaction が失効するため、先に defer しておく。
+  // set / show / reset はいずれも VOICEVOX への問い合わせ (話者一覧) を挟みうる。
+  // Engine の応答が遅いと 3秒の一次応答期限を超えて interaction が失効するため、
+  // 先に defer しておく。
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-  // 設定をリセットして自動(ランダム割り当て)に戻す
-  if (reset) {
+  if (sub === "reset") {
     clearUserSettings(userId);
     const eff = await resolveUserVoice(userId, interaction.guildId);
     await interaction.editReply(
@@ -150,7 +185,24 @@ export async function execute(interaction) {
     return;
   }
 
-  // 引数なし: 自分の実効設定を表示
+  if (sub === "show") {
+    const s = getUserSettings(userId);
+    const eff = await resolveUserVoice(userId, interaction.guildId);
+    const note = s?.speaker == null ? "（自動割り当て）" : "";
+    await interaction.editReply(`あなたの現在の声: ${describeVoice(eff, note)}`);
+    return;
+  }
+
+  // set
+  const speaker = interaction.options.getInteger("speaker");
+  const fish = interaction.options.getString("fish");
+  const speed = interaction.options.getNumber("speed");
+  const pitch = interaction.options.getNumber("pitch");
+  const intonation = interaction.options.getNumber("intonation");
+  const fishEmotion = interaction.options.getString("fish_emotion");
+
+  // 引数なしの set は「変更する項目が無い」ので、現在値を出して終わる
+  // (/config set と同じ扱い。黙って「更新しました」と返さない)
   if (
     speaker === null &&
     fish === null &&
@@ -162,7 +214,9 @@ export async function execute(interaction) {
     const s = getUserSettings(userId);
     const eff = await resolveUserVoice(userId, interaction.guildId);
     const note = s?.speaker == null ? "（自動割り当て）" : "";
-    await interaction.editReply(`あなたの現在の声: ${describeVoice(eff, note)}`);
+    await interaction.editReply(
+      `変更する項目が指定されていません。あなたの現在の声: ${describeVoice(eff, note)}`
+    );
     return;
   }
 
@@ -191,7 +245,7 @@ export async function execute(interaction) {
     }
     if (!ids.includes(speaker)) {
       await interaction.editReply(
-        `話者ID ${speaker} は存在しません。/speakers で確認してください。`
+        `話者ID ${speaker} は存在しません。/voice list で確認してください。`
       );
       return;
     }
@@ -233,7 +287,7 @@ export async function execute(interaction) {
   // Fish を使っていない人が感情だけ指定すると、下の1行に感情が出ず無反応に見えるので補足する
   const hint =
     fishEmotion !== null && eff.engine !== "fish"
-      ? "\n(感情は保存しましたが、`/voice fish:` で Fish Audio のボイスを選ぶまで効きません)"
+      ? "\n(感情は保存しましたが、`/voice set fish:` で Fish Audio のボイスを選ぶまで効きません)"
       : "";
   await interaction.editReply(`あなたの声を更新しました: ${describeVoice(eff)}${hint}`);
 }
