@@ -65,6 +65,7 @@ src/
 ├── ignoreFilter.js   # ユーザー・個人ミュート・prefix・Bot発言の除外判定
 ├── userVoice.js      # 発言者ごとの話者解決ロジック
 ├── store.js          # JSON ファイル永続化 (data/ ディレクトリ)
+├── schema.js         # 永続 JSON の shape 検証 (store.js が load 時に適用)
 ├── log.js            # タイムスタンプ付きの簡易ロガー
 └── commands/         # スラッシュコマンド群
     ├── index.js      # コマンドを Map にまとめる
@@ -82,6 +83,10 @@ src/
 **データフロー**: `MessageCreate` → Bot/セッション/対象ch/除外フィルタ判定 → 効果音判定 → `textProcessor.buildSpeech()` → 発言者名の前置 → `userVoice.resolveUserVoice()` → `player.enqueue()` → `tts.synthVoice()` → エンジン分岐して `voicevox.synth()` / `fishAudio.synth()` (どちらもWAVキャッシュ有り) → ffmpeg で Opus 変換 → Discord VC 再生
 
 **永続化**: `data/guildSettings.json`・`data/userSettings.json`・`data/dictionary.json`・`data/userDict.json`・`data/ignore.json`・`data/fishVoices.json` にその場で書き込む (DB なし)。書き込みは `.tmp` へ書いてから `rename` するアトミック方式 (直接上書きすると停止タイミング次第で JSON が壊れ、`load()` が黙って既定値に落ちて設定が消えるため)。ランタイム中はインメモリキャッシュを使う。Docker 運用時は `data/` をホストにボリュームマウント (`docker-compose.yml`) するため、コンテナを作り直しても設定は保持される。ただし `voicevox_engine` サービスにはボリュームが無いため、engine コンテナ自体を作り直すと VOICEVOX 側の user_dict は消える (→ 起動時に自動復元、後述)。
+
+読み込み時は JSON の構文だけでなく **shape も検証する** (`schema.js`)。valid JSON でありさえすれば root が `null` でも配列とオブジェクトが入れ替わっていても素通りしていたため、壊れた1件が読み上げ処理中の `TypeError` になり、プロセスが落ちれば同じファイルを読み直す compose restart がそのままクラッシュループになる。検証は**既知キーの型と範囲だけを見て無効なものを落とし、未知キーは残す** (消すと古いバージョンへ戻したとき設定が失われる)。除去が発生したファイルは `.corrupt-<timestamp>` へ**退避してから**復旧後の内容で上書きする — 退避しないと次の `save()` で証拠ごと消える。イベントハンドラは `index.js` の `guard()` で包み、1件の不正データが発生源つきのログで済むようにしてある。
+
+**既定値はファイルに焼き付けない**。`updateGuildSettings()` のベースは保存済みの生の値で、既定値の適用は `getGuildSettings()` に一本化してある。`getGuildSettings()` をベースにすると patch に含まれないキーまで既定値のスナップショットとして保存され、あとで `DEFAULT_SETTINGS` を変えても「一度でも `/join` や `/config` を実行したギルドだけ古い既定値のまま」という差が出て、`/config show` を見ても理由が分からない。既に焼き付いた分は起動時の `pruneDefaultGuildSettings()` が落とす。`/config reset` も既定値を書き込むのではなく `resetGuildSettings()` で保存済みキーを消す方式で、**`channelId` (`/join` が決めた読み上げ元) と `speaker`/`speed` は消さない** (`channelId` まで消すと読み上げ対象が「全チャンネル」に広がる)。
 
 ## 設計上のポイント
 
