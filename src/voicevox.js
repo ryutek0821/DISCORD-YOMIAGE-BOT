@@ -1,5 +1,5 @@
-import { logError } from "./log.js";
-import { createLruCache } from "./lruCache.js";
+import { log, logError } from "./log.js";
+import { createLruCache, wavCacheLimits } from "./lruCache.js";
 
 const BASE_URL = process.env.VOICEVOX_URL || "http://localhost:50021";
 
@@ -103,17 +103,56 @@ export async function getSpeakers() {
 }
 
 let speakerIdsCache = null;
+// cache miss 中に同時に呼ばれた分をまとめて1つの fetch に相乗りさせるための Promise。
+// これが無いと、Engine 停止中に同時発言があった数だけ /speakers を叩き、
+// それぞれがリトライも抱えるためリトライ嵐になる。
+let speakerIdsInFlight = null;
+// 直近の失敗時刻。この間は fetch 自体を発行せず即座に諦める (クールダウン)。
+let speakerIdsFailedAt = 0;
+const SPEAKER_IDS_COOLDOWN_MS = 10_000;
+
 // 有効な話者(スタイル)IDの一覧。初回取得後はメモリにキャッシュする。
 export async function getSpeakerIds() {
   if (speakerIdsCache) return speakerIdsCache;
-  const speakers = await getSpeakers();
-  speakerIdsCache = speakers.flatMap((sp) => sp.styles.map((st) => st.id));
-  return speakerIdsCache;
+  if (speakerIdsInFlight) return speakerIdsInFlight;
+  if (Date.now() - speakerIdsFailedAt < SPEAKER_IDS_COOLDOWN_MS) {
+    throw new Error(
+      "直前に失敗したため話者一覧の取得を控えています (クールダウン中)"
+    );
+  }
+  speakerIdsInFlight = (async () => {
+    try {
+      const speakers = await getSpeakers();
+      speakerIdsCache = speakers.flatMap((sp) => sp.styles.map((st) => st.id));
+      speakerIdsFailedAt = 0; // 成功したのでクールダウンは解除
+      return speakerIdsCache;
+    } catch (err) {
+      speakerIdsFailedAt = Date.now();
+      throw err;
+    } finally {
+      speakerIdsInFlight = null;
+    }
+  })();
+  return speakerIdsInFlight;
 }
 
 // 同一条件のテキストを再合成しないための WAV キャッシュ。
 // 他エンジン (Fish Audio) とは別インスタンスにして、キー空間が混ざらないようにする。
-const wavCache = createLruCache(100); // key -> Buffer
+// 件数(100)に加えて合計バイト数にも上限を掛ける (非圧縮 WAV は長文・低速ほど大きく、
+// 件数だけの上限だと数百MB常駐しうるため)。
+const wavCache = createLruCache(100, wavCacheLimits()); // key -> Buffer
+
+// キャッシュに載らないほど大きい WAV が出た警告は、プロセスで1回だけ出す
+// (毎回出すと Engine 不通時の警告と同じくログが埋まるため)。
+let warnedCacheOversize = false;
+function warnCacheOversizeOnce(byteLength) {
+  if (warnedCacheOversize) return;
+  warnedCacheOversize = true;
+  log(
+    `合成した音声が大きすぎてWAVキャッシュに載りません (${Math.round(byteLength / 1024)}KB)。` +
+      `WAV_CACHE_MAX_MB を上げるか maxLength を下げてください`
+  );
+}
 
 // テキストを WAV (Buffer) に合成する
 export async function synth(
@@ -145,7 +184,7 @@ export async function synth(
     body: JSON.stringify(query),
   });
   const wav = Buffer.from(await synthRes.arrayBuffer());
-  wavCache.set(cacheKey, wav);
+  if (!wavCache.set(cacheKey, wav)) warnCacheOversizeOnce(wav.byteLength);
   return wav;
 }
 
