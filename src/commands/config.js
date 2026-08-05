@@ -50,11 +50,11 @@ export const data = new SlashCommandBuilder()
   .addSubcommand((s) =>
     s
       .setName("channels")
-      .setDescription("読み上げ対象チャンネルを変更します")
+      .setDescription("読み上げ対象チャンネルを変更します (スレッドは親chの設定に従います)")
       .addChannelOption((o) =>
         o
           .setName("add")
-          .setDescription("対象に追加するチャンネル")
+          .setDescription("対象に追加するチャンネル (配下のスレッドも対象になります)")
           .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
       )
       .addChannelOption((o) =>
