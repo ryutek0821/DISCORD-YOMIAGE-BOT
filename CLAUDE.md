@@ -138,4 +138,6 @@ Claude Code / Codex はこのリポジトリで PR を直接作らない。変�
 ## Docker 運用
 
 - **engine イメージはタグ固定**: `docker-compose.yml` は `voicevox/voicevox_engine:cpu-0.25.2` に固定してある。バージョンを上げるときは、上げる前に `curl -s localhost:50021/speakers | jq '[.[].styles[].id]'` を記録し、更新後に件数と並び順を比較する。変わっていれば `/voice` 未設定ユーザーの自動割り当て (`userVoice.js` の `userId % ids.length`) が総入れ替わりするので、事前にユーザーへ周知するか各自 `/voice speaker:` で固定してもらう。廃止されたスタイルIDを保存済みのユーザーは既定話者へフォールバックする（起動後のログに警告が出る）。
+- **Bot は非rootで動く**: コンテナは uid 1000 (`node`) で実行される。macOS の Docker Desktop はバインドマウントをホストユーザーへマップするため `data/` はそのままで動くが、**Linux ホスト（Raspberry Pi 等）へ移設する場合は先に `sudo chown -R 1000:1000 data` が必要**。忘れると読み込みだけは成功して書き込みが失敗するため、`/config` や `/dict` が黙って効かない状態になり気付きにくい。
 - **ログは 10MB × 3 世代でローテート**: 両サービスに `logging` を設定済み。`logging` は再作成が必要な項目なので、変更を反映するには `docker compose up -d` でコンテナを作り直す（engine を作り直すと VOICEVOX 側の user_dict は消えるが、Bot 起動時の復元処理が入れ直す）。
+- 反映コマンド: `docker compose up -d --build`（engine 再作成 + bot 再ビルド）。確認は `docker inspect yomiage_bot --format '{{.HostConfig.LogConfig}}'` と `docker exec yomiage_bot id`（`uid=1000(node)` になること）。
