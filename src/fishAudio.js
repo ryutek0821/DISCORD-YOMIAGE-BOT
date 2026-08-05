@@ -1,5 +1,5 @@
-import { logError } from "./log.js";
-import { createLruCache } from "./lruCache.js";
+import { log, logError } from "./log.js";
+import { createLruCache, wavCacheLimits } from "./lruCache.js";
 
 // Fish Audio (https://fish.audio) の TTS API クライアント。
 // VOICEVOX と違いクラウドの従量課金 API なので、呼び出し前に日次バイト上限を
@@ -103,7 +103,19 @@ export async function getModelInfo(referenceId) {
   }
 }
 
-const wavCache = createLruCache(100); // key -> Buffer
+// voicevox.js と同じ方針: 件数(100)に加えて合計バイト数にも上限を掛ける。
+const wavCache = createLruCache(100, wavCacheLimits()); // key -> Buffer
+
+// キャッシュに載らないほど大きい WAV が出た警告は、プロセスで1回だけ出す。
+let warnedCacheOversize = false;
+function warnCacheOversizeOnce(byteLength) {
+  if (warnedCacheOversize) return;
+  warnedCacheOversize = true;
+  log(
+    `合成した音声が大きすぎてWAVキャッシュに載りません (${Math.round(byteLength / 1024)}KB)。` +
+      `WAV_CACHE_MAX_MB を上げるか maxLength を下げてください`
+  );
+}
 
 function clampSpeed(speed) {
   if (typeof speed !== "number" || !Number.isFinite(speed)) return 1.0;
@@ -176,6 +188,6 @@ export async function synth(text, referenceId, { speed = 1.0, temperature } = {}
   });
 
   const wav = Buffer.from(await res.arrayBuffer());
-  wavCache.set(cacheKey, wav);
+  if (!wavCache.set(cacheKey, wav)) warnCacheOversizeOnce(wav.byteLength);
   return wav;
 }
