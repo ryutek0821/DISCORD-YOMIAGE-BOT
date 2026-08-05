@@ -2,11 +2,20 @@ import {
   readFileSync,
   writeFileSync,
   renameSync,
+  copyFileSync,
   mkdirSync,
   existsSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  sanitizeGuildSettings,
+  sanitizeUserSettings,
+  sanitizeDictionary,
+  sanitizeIgnore,
+  sanitizeFishVoices,
+  sanitizeUserDict,
+} from "./schema.js";
 import { logError } from "./log.js";
 
 // 既定はリポジトリ直下の data/。テストが本番データを踏まないよう env で差し替えられる
@@ -41,27 +50,74 @@ const BUILTIN_FISH_VOICES = {
   yaju: { name: "野獣先輩", referenceId: "0042f795e8744feba27460ce426d1500" },
 };
 
-function load(path, fallback = {}) {
-  if (!existsSync(path)) return fallback;
+// 壊れたファイルを退避してから復旧後の内容で上書きする。退避しないと
+// 次回の save で元の内容が消え、何が壊れていたのか調べる材料が無くなる。
+function quarantine(path) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const dest = `${path}.corrupt-${stamp}`;
   try {
-    return JSON.parse(readFileSync(path, "utf8"));
+    copyFileSync(path, dest);
+    console.warn(`${path} を ${dest} に退避しました`);
+  } catch (err) {
+    logError(`${path} の退避に失敗しました`, err);
+  }
+}
+
+// JSON の構文だけでなく shape も検証する。valid JSON でありさえすれば
+// root が null でも配列とオブジェクトが入れ替わっていても素通りしていたため、
+// 壊れた1件が読み上げ処理中の TypeError になり得た。
+function load(path, sanitize, fallback = {}) {
+  if (!existsSync(path)) return fallback;
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
   } catch (err) {
     // 黙って fallback に落ちると設定が消えたことに気付けないので必ずログに残す
     logError(`${path} を読めなかったため既定値で起動します`, err);
+    quarantine(path);
     return fallback;
   }
+  const { value, repaired } = sanitize(parsed);
+  if (repaired) {
+    logError(`${path} に不正なデータがあったため除去しました`, null);
+    quarantine(path);
+    save(path, value);
+  }
+  return value;
 }
 
 function ensureDir() {
   if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
 }
 
-let settings = load(settingsPath); // ギルド単位の読み上げ設定
-let dictionary = load(dictPath); // { [guildId]: [{ word, reading }] }
-let userSettings = load(userSettingsPath); // 全サーバー共通 { [userId]: { speaker?, speed?, pitch?, intonation?, engine?, fishRef?, fishEmotion?, mute? } }
-let userDict = load(userDictPath, []); // 全サーバー共通 [{ uuid, word, reading, accent }] (VOICEVOX ユーザー辞書)
-let ignore = load(ignorePath); // { [guildId]: { users, prefixes, readBots } }
-let fishVoices = load(fishVoicesPath); // 全サーバー共通 { [alias]: { name, referenceId } }
+let settings = load(settingsPath, sanitizeGuildSettings); // ギルド単位の読み上げ設定
+let dictionary = load(dictPath, sanitizeDictionary); // { [guildId]: [{ word, reading }] }
+let userSettings = load(userSettingsPath, sanitizeUserSettings); // 全サーバー共通 { [userId]: { speaker?, speed?, pitch?, intonation?, engine?, fishRef?, fishEmotion?, mute? } }
+let userDict = load(userDictPath, sanitizeUserDict, []); // 全サーバー共通 [{ uuid, word, reading, accent }] (VOICEVOX ユーザー辞書)
+let ignore = load(ignorePath, sanitizeIgnore); // { [guildId]: { users, prefixes, readBots } }
+let fishVoices = load(fishVoicesPath, sanitizeFishVoices); // 全サーバー共通 { [alias]: { name, referenceId } }
+
+// #47: updateGuildSettings が既定値を実体化して保存していた分を起動時に落とす。
+// 残したままだと DEFAULT_SETTINGS を変えても「一度でも /join や /config を実行した
+// ギルドだけ古い既定値のまま」という差が出て、/config show を見ても理由が分からない。
+pruneDefaultGuildSettings();
+
+function pruneDefaultGuildSettings() {
+  let changed = false;
+  for (const [guildId, entry] of Object.entries(settings)) {
+    for (const [key, defaultValue] of Object.entries(DEFAULT_SETTINGS)) {
+      if (!Object.hasOwn(entry, key)) continue;
+      if (JSON.stringify(entry[key]) !== JSON.stringify(defaultValue)) continue;
+      delete entry[key];
+      changed = true;
+    }
+    if (Object.keys(entry).length === 0) {
+      delete settings[guildId];
+      changed = true;
+    }
+  }
+  if (changed) save(settingsPath, settings);
+}
 
 // 直接上書きすると書き込み途中の停止で JSON が壊れ、次回起動時に load() が
 // 黙って fallback に落ちて設定が丸ごと消える。一時ファイルへ書いてから
@@ -84,10 +140,36 @@ export function getGuildSettings(guildId) {
   };
 }
 
+// ベースは「保存済みの生の値」であって既定値マージ後の値ではない。
+// getGuildSettings() をベースにすると patch に含まれないキーまで既定値のスナップショットと
+// してファイルに焼き付き、あとで DEFAULT_SETTINGS を変えても保存済みギルドだけ
+// 古い既定値のまま取り残される。既定値の適用は読み出し側に一本化する。
 export function updateGuildSettings(guildId, patch) {
-  settings[guildId] = { ...getGuildSettings(guildId), ...patch };
+  settings[guildId] = { ...(settings[guildId] || {}), ...patch };
   save(settingsPath, settings);
-  return settings[guildId];
+  return getGuildSettings(guildId);
+}
+
+// /config reset が既定値へ戻すキー。保存済みの値を消すだけにして、
+// DEFAULT_SETTINGS のハードコード重複を作らない。
+// channelId (/join が決めた読み上げ元) と speaker / speed は /config の管轄外なので残す
+// (channelId まで消すと読み上げ対象が「全チャンネル」に広がってしまう)。
+const CONFIG_MANAGED_KEYS = [
+  "readChannelIds",
+  "announceVoiceState",
+  "readAuthorName",
+  "maxLength",
+  "fishDailyBytes",
+];
+
+export function resetGuildSettings(guildId) {
+  const current = settings[guildId];
+  if (current) {
+    for (const key of CONFIG_MANAGED_KEYS) delete current[key];
+    if (Object.keys(current).length === 0) delete settings[guildId];
+    save(settingsPath, settings);
+  }
+  return getGuildSettings(guildId);
 }
 
 // 管理者が明示した複数chを優先し、未指定なら従来の /join 用 channelId に戻る。
