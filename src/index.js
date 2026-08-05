@@ -21,7 +21,6 @@ import {
 import { isIgnoredMessage, isIgnoredMember } from "./ignoreFilter.js";
 import { isAlive, importUserDict } from "./voicevox.js";
 import { logFishStatus } from "./tts.js";
-import { resolveUserVoice } from "./userVoice.js";
 import { logError } from "./log.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join as pathJoin } from "node:path";
@@ -197,8 +196,6 @@ async function onMessage(message) {
   let text = buildSpeech(message, guildId);
   if (!text) return;
 
-  // 発言者ごとの声で読み上げる (未設定者は userId から固定割り当て)
-  const voice = await resolveUserVoice(message.author.id, guildId);
   const authorMode = getGuildSettings(guildId).readAuthorName;
   let speakerState = null;
   if (authorMode === "always" || authorMode === "changed") {
@@ -220,8 +217,11 @@ async function onMessage(message) {
     };
   }
 
+  // 発言者ごとの声で読み上げる。話者解決 (resolveUserVoice) は外部通信を伴うため
+  // ここでは待たず、userId だけ渡して drain() の中でキュー順に直列で解決させる
+  // (先に await すると、後続の発言が先に enqueue されて発言順が逆転するため)。
   // キュー上限などで受理されなかった発言は「最後に読み上げた発言者」に含めない。
-  if (enqueue(guildId, text, voice) && speakerState) {
+  if (enqueue(guildId, text, { userId: message.author.id }) && speakerState) {
     lastSpeaker.set(guildId, speakerState);
   }
 }
