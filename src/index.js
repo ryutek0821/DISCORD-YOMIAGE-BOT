@@ -13,6 +13,11 @@ import {
   buildSpeech,
   formatAuthorName,
 } from "./textProcessor.js";
+import {
+  isAutoJoinable,
+  humanCount,
+  isReadTargetChannel,
+} from "./channels.js";
 import { isIgnoredMessage, isIgnoredMember } from "./ignoreFilter.js";
 import { isAlive, importUserDict } from "./voicevox.js";
 import { logFishStatus } from "./tts.js";
@@ -99,16 +104,19 @@ async function rejoinActiveChannels(c) {
       const me =
         guild.members.me ?? (await guild.members.fetchMe().catch(() => null));
       // 1) 再起動前にいた VC (幽霊接続) を最優先で復帰
-      let target = me?.voice?.channel ?? null;
+      // 自動参加と同じフィルタを通す。片方だけ緩いと「自動参加では避ける AFK に
+      // 再起動したら入っている」という食い違いが起きる。
+      const ghost = me?.voice?.channel ?? null;
+      let target = isAutoJoinable(ghost) ? ghost : null;
       // 2) 幽霊が無ければ、READ_CHANNELS 設定済みギルドに限り人のいる VC へ入る
       if (!target && readChannels.has(guild.id)) {
         target =
           guild.channels.cache.find(
-            (ch) => ch.isVoiceBased?.() && ch.members.some((m) => !m.user.bot)
+            (ch) => isAutoJoinable(ch) && humanCount(ch) > 0
           ) ?? null;
       }
       if (!target) continue;
-      if (target.members.filter((m) => !m.user.bot).size === 0) continue; // 人がいなければ入らない
+      if (humanCount(target) === 0) continue; // 人がいなければ入らない
 
       await join(target);
       // 読み上げ対象chは既存設定を維持 (/join や前回参加で決まった値を尊重)、未設定なら READ_CHANNELS
@@ -153,8 +161,8 @@ client.on(Events.MessageCreate, async (message) => {
 
   const session = getSession(guildId);
   if (!session) return;
-  const targets = getReadChannelIds(guildId);
-  if (targets.length > 0 && !targets.includes(message.channelId)) return;
+  // スレッドは親chの設定に従う (message.channelId はスレッドIDになるため)
+  if (!isReadTargetChannel(message.channel, getReadChannelIds(guildId))) return;
 
   // ユーザー・個人ミュート・プレフィックスの除外は効果音判定より先。
   if (isIgnoredMessage(message, client.user.id)) return;
@@ -203,14 +211,27 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
   const member = newState.member;
   if (member?.user?.bot) return; // Bot 自身の状態変化は無視
 
-  // 人が VC に入ってきて Bot が未接続なら自動参加
+  // 人が VC に入ってきて Bot が未接続なら自動参加。
+  // 入室 (ch が変わった) ときだけに限定する。newState.channel は self-mute/deaf/stream の
+  // 切替でも truthy なので、これを見ないと明示的な /leave 直後に居残りメンバーが
+  // ミュートを押しただけで Bot が戻ってきてしまう。
   const joined = newState.channel;
-  if (joined && !getSession(guildId)) {
+  const entered = oldState.channelId !== newState.channelId && newState.channelId;
+  if (entered && isAutoJoinable(joined) && !getSession(guildId)) {
     try {
       await join(joined);
-      // 自動参加時の読み上げ対象 (ギルドごとの指定があればそのchのみ)
+      // Ready 待ちの間に最後の1人が抜けているとこの時点で無人になる。自動退出は
+      // VoiceStateUpdate 起点なので、放置すると Bot だけが VC に取り残される。
+      if (humanCount(joined) === 0) {
+        leave(guildId);
+        return;
+      }
+      // 読み上げ対象chは既存設定を維持し、未設定のときだけ READ_CHANNELS で補完する
+      // (起動時再入室と同じ優先順位)。毎回上書きすると、/join で #tts に絞った設定が
+      // 全員退出 → 再入室のたびに消え、非公開chまで公開VCへ読み上げてしまう。
+      const current = getGuildSettings(guildId).channelId;
       updateGuildSettings(guildId, {
-        channelId: readChannels.get(guildId) || null,
+        channelId: current ?? readChannels.get(guildId) ?? null,
       });
     } catch (err) {
       console.error("自動参加に失敗:", err);
@@ -243,8 +264,7 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
   // 無関係な VC-B から最後の1人が抜けただけで VC-A から蹴り出されてしまう)。
   const left = oldState.channel;
   if (left && botChannelId && left.id === botChannelId && getSession(guildId)) {
-    const humans = left.members.filter((m) => !m.user.bot).size;
-    if (humans === 0) leave(guildId);
+    if (humanCount(left) === 0) leave(guildId);
   }
 });
 
