@@ -16,6 +16,7 @@ import { synthVoice } from "./tts.js";
 import { getGuildSettings } from "./store.js";
 import { waitForBotChannel } from "./channels.js";
 import { logError } from "./log.js";
+import { resolveUserVoice } from "./userVoice.js";
 
 // guildId -> { connection, player, queue, playing }
 const sessions = new Map();
@@ -238,11 +239,14 @@ async function drain(guildId) {
       audio = readFileSync(next.path);
       volume = next.volume ?? 1.0;
     } else {
-      audio = await synthVoice(
-        guildId,
-        next.text,
-        next.voice ?? getGuildSettings(guildId)
-      );
+      // 話者解決はここ (合成の直前) でキュー順に直列で行う。enqueue() 時点で
+      // await してしまうと、先行メッセージが話者一覧取得を待っている間に
+      // 個人設定を持つ後続メッセージが先に enqueue され、発言順が逆転するため。
+      let voice = next.voice;
+      if (!voice && next.userId != null) {
+        voice = await resolveUserVoice(next.userId, guildId);
+      }
+      audio = await synthVoice(guildId, next.text, voice ?? getGuildSettings(guildId));
     }
     session.player.play(audioToResource(audio, volume));
   } catch (err) {
@@ -253,11 +257,15 @@ async function drain(guildId) {
   }
 }
 
-export function enqueue(guildId, text, voice) {
+// opts.voice を渡せば話者解決を省略できる (VC参加/退出通知など個人ボイスを使わない発言用)。
+// opts.userId を渡すと、実際の話者解決 (resolveUserVoice) は drain() の中まで遅延される
+// (キュー投入自体は外部通信を待たない同期処理にするため。詳細は drain() のコメント参照)。
+export function enqueue(guildId, text, opts = {}) {
   const session = sessions.get(guildId);
   if (!session || !text) return false;
   if (session.queue.length >= MAX_QUEUE) return false;
-  session.queue.push({ kind: "tts", text, voice });
+  const { voice, userId } = opts;
+  session.queue.push({ kind: "tts", text, voice, userId });
   drain(guildId);
   return true;
 }
