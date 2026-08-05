@@ -14,6 +14,7 @@ import {
 } from "@discordjs/voice";
 import { synthVoice } from "./tts.js";
 import { getGuildSettings } from "./store.js";
+import { waitForBotChannel } from "./channels.js";
 import { logError } from "./log.js";
 
 // guildId -> { connection, player, queue, playing }
@@ -52,8 +53,28 @@ export function join(channel) {
   return promise;
 }
 
+// 呼び出し側 (/join) がそのまま利用者に見せてよいエラー。
+// 「権限が無い」「満員」を汎用文言に潰すと、管理者が直せる原因が伝わらない。
+function joinError(message) {
+  return Object.assign(new Error(message), { userFacing: true });
+}
+
+// 接続を張る前に権限を確かめる。joinable は View/Connect に加えて
+// 「満員かつ MoveMembers を持たない」ケースも false になる。
+function assertJoinable(channel) {
+  if (channel.joinable === false) {
+    throw joinError(
+      `${channel.name} に接続できません (権限が無いか満員です)。`
+    );
+  }
+  if (channel.speakable === false) {
+    throw joinError(`${channel.name} で発言する権限がありません。`);
+  }
+}
+
 async function doJoin(channel) {
   const guildId = channel.guild.id;
+  assertJoinable(channel);
 
   // 同一ギルドで入り直す場合、古い player は使われなくなるので先に畳んでおく。
   // stop() は Idle を同期的に発火して drain() を呼ぶため、先に Map から外しておく。
@@ -132,6 +153,13 @@ async function doJoin(channel) {
   // 二度と掃除されない死んだセッションが残るので入室failed扱いにする。
   if (connection.state.status === VoiceConnectionStatus.Destroyed) {
     throw new Error("接続が破棄されたため参加を中止しました");
+  }
+  // VC-A で Ready の connection を VC-B へ移動させた場合、entersState(Ready) は
+  // 移動完了を待たずに即解決する。ここで確認せずに session を登録すると、
+  // B 向けの音声が A へ流れたまま「B に参加しました」と応答してしまう。
+  if (!(await waitForBotChannel(channel))) {
+    destroyQuietly(connection);
+    throw joinError(`${channel.name} への移動を確認できませんでした。`);
   }
   sessions.set(guildId, session);
   return session;
