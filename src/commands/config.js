@@ -1,5 +1,9 @@
 import { ChannelType, MessageFlags, SlashCommandBuilder } from "discord.js";
-import { getGuildSettings, updateGuildSettings } from "../store.js";
+import {
+  getGuildSettings,
+  updateGuildSettings,
+  resetGuildSettings,
+} from "../store.js";
 
 const AUTHOR_MODE_LABELS = {
   off: "OFF",
@@ -160,12 +164,18 @@ export async function execute(interaction) {
     const removeId = interaction.options.getString("remove_id");
     const clear = interaction.options.getBoolean("clear") === true;
     const current = getGuildSettings(interaction.guildId);
-    let ids = clear
-      ? []
-      : Array.isArray(current.readChannelIds)
-        ? [...current.readChannelIds]
-        : [];
+    const before = Array.isArray(current.readChannelIds)
+      ? current.readChannelIds
+      : [];
 
+    // 何も指定されていなければ書き込まない (set 分岐と同じ扱い)。
+    // 無条件に save すると、引数なしの実行でも「更新しました」と返ってしまう。
+    if (!add && !remove && !removeId && !clear) {
+      await replySettings(interaction, "変更する項目が指定されていません。");
+      return;
+    }
+
+    let ids = clear ? [] : [...before];
     if (remove) ids = ids.filter((id) => id !== remove.id);
     if (removeId) ids = ids.filter((id) => id !== removeId);
     if (add && !ids.includes(add.id)) {
@@ -178,17 +188,33 @@ export async function execute(interaction) {
       }
       ids.push(add.id);
     }
+
+    // 明示指定リストが空のときは /join が書いた channelId が対象になっている。
+    // そこに無い ch を remove しても空振りするので、外れなかったことを明示する
+    // (channelId を消すと「全チャンネル」に広がってしまうため、勝手には消さない)。
+    const missedRemoval =
+      remove &&
+      before.length === 0 &&
+      current.channelId === remove.id &&
+      ids.length === 0;
+
+    if (JSON.stringify(ids) === JSON.stringify(before)) {
+      await replySettings(
+        interaction,
+        missedRemoval
+          ? `変更はありません。明示指定が空のため、/join で設定された ${formatChannel(interaction, remove.id)} が対象のままです。外すには読み上げたいchを add で指定するか、/leave してください。`
+          : "変更はありません。"
+      );
+      return;
+    }
+
     updateGuildSettings(interaction.guildId, { readChannelIds: ids });
     await replySettings(interaction, "読み上げ対象chを更新しました。");
     return;
   }
 
-  updateGuildSettings(interaction.guildId, {
-    readChannelIds: [],
-    announceVoiceState: true,
-    readAuthorName: "off",
-    maxLength: 50,
-    fishDailyBytes: 50000,
-  });
+  // 既定値を書き込むのではなく保存済みの値を消す。書き込むと DEFAULT_SETTINGS の
+  // 重複定義になり、既定値を変えたときにリセット済みギルドだけ古い値が残る。
+  resetGuildSettings(interaction.guildId);
   await replySettings(interaction, "読み上げ設定を既定値に戻しました。");
 }
