@@ -1,5 +1,6 @@
 import { SlashCommandBuilder, MessageFlags } from "discord.js";
 import { join } from "../player.js";
+import { readTargetIdFor } from "../channels.js";
 import { updateGuildSettings } from "../store.js";
 import { logError } from "../log.js";
 
@@ -23,13 +24,24 @@ export async function execute(interaction) {
     await join(channel);
   } catch (err) {
     logError(`${channel.name} への参加に失敗`, err);
+    // 権限不足・満員・移動未確認は原因が分かる文言をそのまま返す (管理者が直せるため)。
     await interaction.editReply(
-      "ボイスチャンネルへの参加に失敗しました。もう一度お試しください。"
+      err?.userFacing
+        ? err.message
+        : "ボイスチャンネルへの参加に失敗しました。もう一度お試しください。"
     );
     return;
   }
-  updateGuildSettings(interaction.guildId, { channelId: interaction.channelId });
+  // スレッドで実行された場合は親chを保存する。スレッドIDのまま保存すると、
+  // アーカイブされた時点でどの発言も読み上げ対象に当たらなくなる。
+  const readChannelId =
+    readTargetIdFor(interaction.channel) ?? interaction.channelId;
+  updateGuildSettings(interaction.guildId, { channelId: readChannelId });
+  const where =
+    readChannelId === interaction.channelId
+      ? "このチャンネル"
+      : `<#${readChannelId}>`;
   await interaction.editReply(
-    `${channel.name} に参加しました。このチャンネルの発言を読み上げます。`
+    `${channel.name} に参加しました。${where}（配下のスレッドを含む）の発言を読み上げます。`
   );
 }
