@@ -1,6 +1,7 @@
 import { SlashCommandBuilder, MessageFlags } from "discord.js";
 import { join } from "../player.js";
 import { readTargetIdFor } from "../channels.js";
+import { authorizeJoin, isVoiceOperator } from "../authorize.js";
 import { updateGuildSettings } from "../store.js";
 import { logError } from "../log.js";
 
@@ -10,9 +11,16 @@ export const data = new SlashCommandBuilder()
 
 export async function execute(interaction) {
   const channel = interaction.member?.voice?.channel;
-  if (!channel) {
+  // 稼働中の読み上げを別VCの一般ユーザーに奪われないよう、移動には明示権限を要求する。
+  // 判定は Bot の VoiceState を見る (session を持たない幽霊接続も拾うため)。
+  const verdict = authorizeJoin({
+    botChannelId: interaction.guild?.members?.me?.voice?.channelId ?? null,
+    userChannelId: channel?.id ?? null,
+    privileged: isVoiceOperator(interaction.memberPermissions),
+  });
+  if (!verdict.allowed) {
     await interaction.reply({
-      content: "先にボイスチャンネルに参加してください。",
+      content: verdict.reason,
       flags: MessageFlags.Ephemeral,
     });
     return;
