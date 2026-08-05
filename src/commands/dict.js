@@ -21,6 +21,7 @@ import {
 } from "../authorize.js";
 import { replyLines } from "./replyLines.js";
 import { logError } from "../log.js";
+import { ja } from "./i18n.js";
 
 // 全サーバー共通のユーザー辞書を触れる運用者。未設定なら Bot 所有者だけ。
 const operatorIds = parseOperatorIds(process.env.OPERATOR_IDS);
@@ -48,22 +49,26 @@ export const data = new SlashCommandBuilder()
   .addSubcommandGroup((g) =>
     g
       .setName("replace")
-      .setDescription("文字列の読み替え辞書 (単純な全置換)")
+      .setNameLocalizations(ja("読み替え"))
+      .setDescription("読み方を文字列の置き換えで直します (このサーバーのみ)")
       .addSubcommand((s) =>
         s
           .setName("add")
-          .setDescription("読み替えを登録します")
+          .setNameLocalizations(ja("追加"))
+          .setDescription("読み替えを登録します (要サーバー管理)")
           .addStringOption((o) =>
             o
               .setName("word")
-              .setDescription("対象の語")
+              .setNameLocalizations(ja("語"))
+              .setDescription("読み方を直したい語")
               .setRequired(true)
               .setMaxLength(100)
           )
           .addStringOption((o) =>
             o
               .setName("reading")
-              .setDescription("読み (ひらがな/カタカナ推奨)")
+              .setNameLocalizations(ja("読み"))
+              .setDescription("読ませたい文字列 (ひらがな/カタカナ推奨、記号も可)")
               .setRequired(true)
               .setMaxLength(200)
           )
@@ -71,54 +76,75 @@ export const data = new SlashCommandBuilder()
       .addSubcommand((s) =>
         s
           .setName("remove")
-          .setDescription("読み替えを削除します")
+          .setNameLocalizations(ja("削除"))
+          .setDescription("読み替えを削除します (要サーバー管理)")
           .addStringOption((o) =>
-            o.setName("word").setDescription("削除する語").setRequired(true)
+            o
+              .setName("word")
+              .setNameLocalizations(ja("語"))
+              .setDescription("削除する語")
+              .setRequired(true)
           )
       )
       .addSubcommand((s) =>
-        s.setName("list").setDescription("登録済みの読み替えを一覧表示します")
+        s
+          .setName("list")
+          .setNameLocalizations(ja("一覧"))
+          .setDescription("登録済みの読み替えを表示します")
       )
   )
   .addSubcommandGroup((g) =>
     g
       .setName("word")
-      .setDescription("VOICEVOXユーザー辞書 (全サーバー共通・Bot運用者専用)")
+      .setNameLocalizations(ja("単語登録"))
+      .setDescription("VOICEVOXに単語として覚えさせます (全サーバー共通・Bot運用者専用)")
       .addSubcommand((s) =>
         s
           .setName("add")
+          .setNameLocalizations(ja("追加"))
           .setDescription("VOICEVOXのユーザー辞書に単語を登録します")
           .addStringOption((o) =>
             o
               .setName("word")
-              .setDescription("対象の語")
+              .setNameLocalizations(ja("語"))
+              .setDescription("読み方を覚えさせたい語")
               .setRequired(true)
               .setMaxLength(100)
           )
           .addStringOption((o) =>
             o
               .setName("reading")
-              .setDescription("読み (ひらがな/カタカナのみ)")
+              .setNameLocalizations(ja("読み"))
+              .setDescription("読み方 (ひらがな/カタカナのみ)")
               .setRequired(true)
               .setMaxLength(200)
           )
           .addIntegerOption((o) =>
             o
               .setName("accent")
-              .setDescription("アクセント型 (省略時は0=平板)")
+              .setNameLocalizations(ja("アクセント型"))
+              .setDescription("音が下がる位置 (省略時は0=平板)")
               .setMinValue(0)
           )
       )
       .addSubcommand((s) =>
         s
           .setName("remove")
+          .setNameLocalizations(ja("削除"))
           .setDescription("VOICEVOXのユーザー辞書から単語を削除します")
           .addStringOption((o) =>
-            o.setName("word").setDescription("削除する語").setRequired(true)
+            o
+              .setName("word")
+              .setNameLocalizations(ja("語"))
+              .setDescription("削除する語")
+              .setRequired(true)
           )
       )
       .addSubcommand((s) =>
-        s.setName("list").setDescription("登録済みのユーザー辞書単語を一覧表示します")
+        s
+          .setName("list")
+          .setNameLocalizations(ja("一覧"))
+          .setDescription("登録済みのユーザー辞書単語を表示します")
       )
   );
 

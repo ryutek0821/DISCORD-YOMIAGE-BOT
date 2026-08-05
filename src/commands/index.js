@@ -2,22 +2,14 @@ import { InteractionContextType, MessageFlags } from "discord.js";
 import * as join from "./join.js";
 import * as leave from "./leave.js";
 import * as voice from "./voice.js";
-import * as speakers from "./speakers.js";
-import * as fishvoice from "./fishvoice.js";
 import * as dict from "./dict.js";
 import * as config from "./config.js";
-import * as ignore from "./ignore.js";
 
-export const commands = [
-  join,
-  leave,
-  voice,
-  speakers,
-  fishvoice,
-  dict,
-  config,
-  ignore,
-];
+// トップレベルのコマンドは「VCの出入り (join/leave)」「自分の声 (voice)」
+// 「読み方 (dict)」「サーバーの挙動 (config)」の4系統に絞ってある。
+// 旧 /speakers と /fishvoice は voice.js へ、旧 /ignore は config.js へ統合した
+// (どれも単独では意味を持たず、統合先の設定値を調べる/絞るための口だったため)。
+export const commands = [join, leave, voice, dict, config];
 
 // 全コマンドを Guild 限定にする。global 登録すると Bot の DM にもコマンドが出てしまい、
 // 例えば DM の /leave は guildId=null のまま leave() と設定更新を実行して
