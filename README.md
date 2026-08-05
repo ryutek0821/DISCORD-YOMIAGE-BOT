@@ -35,33 +35,51 @@ VOICEVOX Engine を使った Discord 読み上げ Bot。指定したテキスト
    # .env を編集して DISCORD_TOKEN / CLIENT_ID を入力
    ```
 
-3. VOICEVOX Engine を起動
+ここから先は **(A) 通常運用** と **(B) ローカル開発** のどちらかを選ぶ。
+**A と B を同時に実行しないこと** — 同一トークンの Bot プロセスが2つ動くと同じ発言が
+2回読み上げられ、VC 接続も奪い合いになる。
 
-   ```sh
-   docker compose up -d
-   curl http://localhost:50021/version   # 疎通確認
-   ```
+### (A) 通常運用（Docker、推奨）
 
-4. 依存をインストール
+Bot も VOICEVOX Engine もコンテナで常駐させる。`npm install` / `npm start` は不要。
 
-   ```sh
-   npm install
-   ```
+```sh
+docker compose up -d                          # Engine + Bot をまとめて起動
+curl http://localhost:50021/version           # Engine の疎通確認
+docker compose run --rm bot npm run deploy    # スラッシュコマンドを登録（初回 or コマンド変更時）
+```
 
-5. スラッシュコマンドを登録
+```sh
+docker compose logs -f bot        # ログ確認
+docker compose restart bot        # Bot だけ再起動
+docker compose up -d --build bot  # コード変更を反映（再ビルド）
+```
 
-   ```sh
-   npm run deploy
-   ```
+### (B) ローカル開発（コンテナを使わず直接実行）
 
-   `.env` に `GUILD_ID` を設定するとそのサーバーへ即時登録（テストに便利）。
-   未設定だとグローバル登録（反映に最大1時間程度）。
+Bot はホストで直接動かし、VOICEVOX Engine だけコンテナにする。要 Node.js 22.12 以上。
 
-6. Bot を起動
+```sh
+docker compose up -d voicevox_engine   # Engine だけ起動
+npm install                            # 依存をインストール
+npm run deploy                         # スラッシュコマンドを登録
+npm start                              # Bot を起動
+```
 
-   ```sh
-   npm start
-   ```
+### コマンド登録の scope
+
+`npm run deploy`（Docker なら `docker compose run --rm bot npm run deploy`）は
+`.env` の `GUILD_IDS`（カンマ区切りで複数指定可）が設定されていればそのサーバーへ
+即時登録、空ならグローバル登録（反映に最大1時間程度）になる。
+
+**scope を切り替えても反対側の古い登録は自動では消えない**（例: グローバルで
+運用してから `GUILD_IDS` を設定すると、グローバルとギルドの両方にコマンドが
+残って二重に見える）。掃除するには `--cleanup` を付ける。
+
+```sh
+npm run deploy -- --cleanup --dry-run   # まず対象を確認
+npm run deploy -- --cleanup             # 実際に掃除する
+```
 
 ## 使い方
 
