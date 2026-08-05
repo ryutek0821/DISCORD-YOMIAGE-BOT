@@ -15,6 +15,8 @@ const MOVE_DENIED =
   "Bot は別のボイスチャンネルで読み上げ中です。移動させるには「サーバー管理」または「メンバーを移動」権限が必要です。";
 const LEAVE_DENIED =
   "Bot がいるボイスチャンネルに参加していません。切断するには「サーバー管理」または「メンバーを移動」権限が必要です。";
+const SKIP_DENIED =
+  "Bot がいるボイスチャンネルに参加していません。読み上げを止めるには「サーバー管理」または「メンバーを移動」権限が必要です。";
 
 // /join の可否。Bot 未接続なら誰でも呼べる (従来どおり) が、既に別のVCで
 // 読み上げ中なら移動は明示権限を持つ人に限る。無条件に移動を許すと、
@@ -37,6 +39,17 @@ export function authorizeLeave({ botChannelId, userChannelId, privileged }) {
     return { allowed: true };
   }
   return { allowed: false, reason: LEAVE_DENIED };
+}
+
+// /skip の可否。考え方は authorizeLeave と同じ: VC外の人が読み上げを止められると、
+// 聞いている人の意図と無関係に妨害できてしまうため、Bot と同じVCにいる人か
+// 明示権限を持つ人に限る。Bot 未接続のときは通す — 呼び出し側が
+// 「読み上げていません」を返す通常経路。
+export function authorizeSkip({ botChannelId, userChannelId, privileged }) {
+  if (!botChannelId || botChannelId === userChannelId || privileged) {
+    return { allowed: true };
+  }
+  return { allowed: false, reason: SKIP_DENIED };
 }
 
 // OPERATOR_IDS="123,456" を Set に。

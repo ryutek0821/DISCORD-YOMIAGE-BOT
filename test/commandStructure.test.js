@@ -49,10 +49,10 @@ function fakeInteraction({
 }
 
 describe("コマンド構成", () => {
-  test("トップレベルは5コマンドに絞られている", () => {
+  test("トップレベルは6コマンドに絞られている", () => {
     assert.deepEqual(
       commands.map((c) => c.data.toJSON().name).sort(),
-      ["config", "dict", "join", "leave", "voice"]
+      ["config", "dict", "join", "leave", "skip", "voice"]
     );
   });
 
