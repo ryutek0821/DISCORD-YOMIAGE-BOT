@@ -115,6 +115,10 @@ export function sanitizeGuildSettings(raw) {
 
 const USER_SETTING_RULES = {
   speaker: (v) => num(v, { min: 0, integer: true }),
+  // 自動割り当ての結果を凍結したもの。speaker (ユーザーが /voice で選んだ値) とは
+  // 別に持つ。混ぜると /voice show が「自動割り当て」を「設定済み」と表示し、
+  // /voice reset で戻すべき状態が分からなくなる。
+  autoSpeaker: (v) => num(v, { min: 0, integer: true }),
   speed: (v) => num(v, { min: 0.5, max: 2.0 }),
   pitch: (v) => num(v, { min: -0.15, max: 0.15 }),
   intonation: (v) => num(v, { min: 0, max: 2.0 }),

@@ -11,6 +11,7 @@ useTempDataDir({
 });
 
 const { resolveUserVoice } = await import("../src/userVoice.js");
+const { getUserSettings } = await import("../src/store.js");
 
 describe("VOICEVOX 不通時のフォールバック", () => {
   test("話者一覧が取れなければギルド既定話者に落ちる", async () => {
@@ -45,6 +46,20 @@ describe("VOICEVOX 不通時のフォールバック", () => {
     });
     try {
       assert.equal((await resolveUserVoice("999", "unknown")).speaker, 3);
+    } finally {
+      stub.restore();
+    }
+  });
+
+  test("フォールバックしたギルド既定話者は凍結しない", async () => {
+    // 焼き付けると Engine 復旧後も /voice 未設定の全員が既定話者のままになり、
+    // 本人には「なぜか全員同じ声」としか見えない
+    const stub = stubFetch(() => {
+      throw new Error("ECONNREFUSED");
+    });
+    try {
+      await resolveUserVoice("999", "g1");
+      assert.equal(getUserSettings("999")?.autoSpeaker, undefined);
     } finally {
       stub.restore();
     }
