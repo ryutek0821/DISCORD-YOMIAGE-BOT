@@ -13,6 +13,15 @@ services:
     ports:
       - "127.0.0.1:50021:50021"
     restart: unless-stopped
+    # Bot 側の depends_on で「APIが応答すること」まで待たせるためのもの。
+    # ただし正はアプリ側の再同期 (userDict.js の startUserDictSync) — healthcheck は
+    # 初回の race を減らすだけで、運用中に engine だけ再作成された場合は救えない。
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:50021/version"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
     logging:
       driver: json-file
       options:
@@ -29,9 +38,11 @@ services:
     volumes:
       # data/*.json (話者・辞書設定) を永続化
       - ./data:/app/data
-    # 起動順を保証 (VOICEVOX が一時的に未応答でも Bot 側でフォールバックする)
+    # /version が応答するまで待ってから起動する (VOICEVOX が一時的に未応答でも
+    # Bot 側でフォールバックするので、待てなかった場合も致命ではない)
     depends_on:
-      - voicevox_engine
+      voicevox_engine:
+        condition: service_healthy
     restart: unless-stopped
     # 既定の json-file ドライバは上限を指定しないと無制限に肥大し、restart: unless-stopped で
     # 常駐する両サービスのログが削除されるまで積み上がる。ディスクが埋まると store.js の設定書き込みが

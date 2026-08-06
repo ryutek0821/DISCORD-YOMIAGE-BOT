@@ -5,7 +5,6 @@ import { getSession, enqueue, enqueueFile, leave, join } from "./player.js";
 import {
   getGuildSettings,
   updateGuildSettings,
-  getUserDict,
   getReadChannelIds,
   getIgnore,
 } from "./store.js";
@@ -19,7 +18,8 @@ import {
   isReadTargetChannel,
 } from "./channels.js";
 import { isIgnoredMessage, isIgnoredMember } from "./ignoreFilter.js";
-import { isAlive, importUserDict } from "./voicevox.js";
+import { isAlive } from "./voicevox.js";
+import { startUserDictSync } from "./userDict.js";
 import { logFishStatus } from "./tts.js";
 import { logError } from "./log.js";
 import { fileURLToPath } from "node:url";
@@ -91,25 +91,15 @@ client.once(Events.ClientReady, async (c) => {
     console.warn(
       "VOICEVOX Engine に接続できません。docker compose up -d で起動してください。"
     );
-  } else {
-    await syncUserDict(); // engine コンテナ再作成で消えたユーザー辞書を復元
   }
+  // engine コンテナは user_dict を永続化しないため、保存済みの辞書を投入し直す。
+  // ここで isAlive() を条件にしない — cold start で Engine の起動が遅れただけで
+  // 辞書が Bot の再起動まで戻らなくなる。startUserDictSync() が Engine の状態を
+  // 定期的に突き合わせ、消えていれば復旧後に入れ直す。
+  startUserDictSync();
   logFishStatus(); // Fish Audio は任意。未設定でも VOICEVOX のみで動く
   await rejoinActiveChannels(c); // 再起動で消えたセッションを復帰
 });
-
-// VOICEVOX の user_dict はコンテナに永続化されないため、起動のたびに
-// data/userDict.json の内容を engine へ再投入する (uuid はそのまま使うので重複登録にはならない)。
-async function syncUserDict() {
-  try {
-    const entries = getUserDict();
-    if (entries.length === 0) return;
-    await importUserDict(entries);
-    console.log(`ユーザー辞書を復元しました (${entries.length}件)`);
-  } catch (err) {
-    console.error("ユーザー辞書の復元に失敗:", err);
-  }
-}
 
 // 再起動で in-memory のセッションが消えるため、起動時に入り直す。
 // Discord 上は幽霊接続として残るが新プロセスにはセッションが無く読み上げできないため。

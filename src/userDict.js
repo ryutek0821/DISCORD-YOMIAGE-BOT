@@ -8,10 +8,12 @@
 import {
   addUserDictWord,
   deleteUserDictWord,
+  importUserDict,
+  listUserDict,
   updateUserDictWord,
 } from "./voicevox.js";
 import { addUserDictEntry, getUserDict, removeUserDictEntry } from "./store.js";
-import { logError } from "./log.js";
+import { log, logError } from "./log.js";
 
 const PRIORITY = 5;
 
@@ -98,4 +100,86 @@ export function removeWord(word) {
     removeUserDictEntry(word);
     return { removed: true };
   });
+}
+
+// --- Engine への再同期 ---
+//
+// voicevox_engine コンテナは user_dict を永続化しないため、Engine を作り直すと
+// 登録語が消える。起動時に1度 import するだけだと、
+// (1) cold start で Engine の起動が Bot より遅れた場合、
+// (2) 運用中に Engine だけ再起動・再作成した場合
+// に、TTS 自体は復旧しても辞書は Bot を再起動するまで戻らない。
+//
+// 「isAlive() が true になったか」ではなく **保存済みの uuid が Engine に在るか**を
+// 突き合わせる。Engine には再起動を示すマーカーが無いので、これが (2) を直接
+// 検知できる唯一の確実な方法になる。
+const SYNC_INTERVAL_MS = 60_000;
+// 失敗時のバックオフ (最後の値で頭打ち)。Engine が長時間落ちていても
+// リクエストと timer が積み上がらないようにする。
+const SYNC_BACKOFF_MS = [5_000, 15_000, 30_000, 60_000, 120_000, 300_000];
+
+let syncTimer = null;
+let syncStopped = true;
+let syncFailures = 0;
+
+// Engine と JSON を突き合わせ、必要なときだけ import する。
+// 判定は **JSON にある uuid が Engine に無いこと** に限る:
+//   - Engine 側にだけ有る語を mismatch に含めると、import は既存語を消さないので
+//     毎回 import し続ける無限ループになる
+//   - surface は Engine 側で半角英字が全角へ正規化されるため、内容の比較も
+//     恒久的な mismatch を生む
+export function reconcileUserDict() {
+  return serialize(async () => {
+    const entries = getUserDict();
+    // 投入するものが無ければ Engine を叩く必要も無い
+    // (Engine 側に語が有ってもそれは他所の登録なので触らない)
+    if (entries.length === 0) return { imported: false };
+
+    const remote = await listUserDict();
+    const missing = entries.filter((e) => e.uuid && !remote[e.uuid]);
+    if (missing.length === 0) return { imported: false };
+
+    await importUserDict(entries);
+    return { imported: true, count: entries.length };
+  });
+}
+
+function scheduleSync(delayMs) {
+  if (syncStopped) return;
+  syncTimer = setTimeout(runSync, delayMs);
+  // 同期待ちでプロセスの終了を妨げない
+  syncTimer.unref?.();
+}
+
+async function runSync() {
+  let delay = SYNC_INTERVAL_MS;
+  try {
+    const result = await reconcileUserDict();
+    if (result.imported) {
+      log(`ユーザー辞書を Engine へ復元しました (${result.count}件)`);
+    }
+    syncFailures = 0;
+  } catch (err) {
+    // 連続失敗のたびに出すと Engine 停止中はログが埋まるので初回だけ
+    if (syncFailures === 0) {
+      logError("ユーザー辞書の同期に失敗しました。復旧するまで再試行します", err);
+    }
+    delay = SYNC_BACKOFF_MS[Math.min(syncFailures, SYNC_BACKOFF_MS.length - 1)];
+    syncFailures++;
+  }
+  // 次回は必ず完了後に積む (in-flight が重ならない = single-flight)
+  scheduleSync(delay);
+}
+
+export function startUserDictSync() {
+  if (!syncStopped) return;
+  syncStopped = false;
+  syncFailures = 0;
+  scheduleSync(0);
+}
+
+export function stopUserDictSync() {
+  syncStopped = true;
+  if (syncTimer) clearTimeout(syncTimer);
+  syncTimer = null;
 }
