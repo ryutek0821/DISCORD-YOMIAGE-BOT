@@ -10,9 +10,12 @@ import {
 } from "../store.js";
 import {
   addUserDictWord,
+  countMora,
   deleteUserDictWord,
   hiraganaToKatakana,
-  isKatakana,
+  isInputError,
+  validatePronunciation,
+  validateSurface,
 } from "../voicevox.js";
 import {
   isOperator,
@@ -226,6 +229,18 @@ async function executeReplace(interaction, sub, guildId) {
   );
 }
 
+// VOICEVOX 由来の失敗をユーザーへ案内する。
+// 入力エラー (4xx) と Engine 障害 (timeout / 接続失敗 / 5xx) を同じ文言に潰すと、
+// 自分で直せる入力ミスを「接続できない」と誤診して原因に辿り着けなくなる。
+function dictFailureMessage(err, what) {
+  if (isInputError(err)) {
+    return err.detail
+      ? `VOICEVOXが入力を受け付けませんでした: ${err.detail}`
+      : "VOICEVOXが入力を受け付けませんでした。語と読みを見直してください。";
+  }
+  return `VOICEVOXに接続できないため${what}できませんでした。しばらくしてからもう一度お試しください。`;
+}
+
 // VOICEVOX ユーザー辞書 (単語+読みの正式登録)。全サーバー共通で保存する。
 async function executeWord(interaction, sub) {
   if (sub === "add") {
@@ -233,12 +248,32 @@ async function executeWord(interaction, sub) {
     const rawReading = interaction.options.getString("reading");
     const accent = interaction.options.getInteger("accent") ?? 0;
 
+    const surfaceError = validateSurface(word);
+    if (surfaceError) {
+      await interaction.reply({
+        content: surfaceError,
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
     // ひらがな入力も許容し、全角カタカナへ変換してから VOICEVOX へ渡す
     const reading = hiraganaToKatakana(rawReading);
-    if (!isKatakana(reading)) {
+    const readingError = validatePronunciation(reading);
+    if (readingError) {
       await interaction.reply({
-        content:
-          "読みはひらがな/カタカナのみで入力してください (漢字・英数字・記号は登録できません)。",
+        content: `読み「${rawReading}」は登録できません: ${readingError}`,
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    // アクセント型の上限はモーラ数で決まるため、slash command の静的な
+    // setMaxValue では表現できない。実行時に見る。
+    const moraCount = countMora(reading);
+    if (accent > moraCount) {
+      await interaction.reply({
+        content: `アクセント型は 0〜${moraCount} で指定してください (「${reading}」は ${moraCount} モーラです)。`,
         flags: MessageFlags.Ephemeral,
       });
       return;
@@ -256,10 +291,8 @@ async function executeWord(interaction, sub) {
     try {
       uuid = await addUserDictWord(word, reading, accent, 5);
     } catch (err) {
-      console.error("VOICEVOXユーザー辞書への登録に失敗:", err);
-      await interaction.editReply(
-        "VOICEVOXに接続できないため登録できませんでした。しばらくしてからもう一度お試しください。"
-      );
+      logError("VOICEVOXユーザー辞書への登録に失敗", err);
+      await interaction.editReply(dictFailureMessage(err, "登録"));
       return;
     }
 

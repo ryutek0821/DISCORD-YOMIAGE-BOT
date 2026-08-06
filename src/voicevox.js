@@ -31,6 +31,59 @@ const LOGGABLE_QUERY_KEYS = new Set([
 // 調査用に生のパスを出したいときだけ有効化する
 const DEBUG_LOG_TEXT = process.env.DEBUG_LOG_TEXT === "1";
 
+// HTTP status を持つエラー。呼び出し側が「入力の誤り (4xx)」と
+// 「Engine の障害 (timeout / 接続失敗 / 5xx)」を区別できるようにするためのもの。
+// タイムアウトや接続失敗は status を持たない素の Error のまま投げる。
+export class VoicevoxHttpError extends Error {
+  constructor(message, { status, detail }) {
+    super(message);
+    this.name = "VoicevoxHttpError";
+    this.status = status;
+    // detail は console.error(err) で丸ごと出力されうるので、
+    // extractValidationMessage() が通した固定文言しか入れない (下記参照)。
+    if (detail) this.detail = detail;
+  }
+}
+
+export function isInputError(err) {
+  return err?.status >= 400 && err.status < 500;
+}
+
+// pydantic の 422 detail は
+//   `Value error, <説明>。 [type=value_error, input_value='<入力そのもの>', ...]`
+// という形で、input_value に**辞書の語や読み上げ本文がそのまま入る**。
+// ここでは `Value error,` と `[type=` に挟まれた説明だけを取り出し、入力値は捨てる。
+// パターンに一致しない応答からは何も取り出さない (未知の本文を
+// エラーオブジェクトに載せると、それを console.error したときに本文が漏れるため)。
+const VALIDATION_MESSAGE_RE = /Value error,\s*(.+?)\s*\[type=/g;
+const VALIDATION_MESSAGE_MAX = 200;
+
+export function extractValidationMessage(bodyText) {
+  if (!bodyText) return undefined;
+  let detail;
+  try {
+    detail = JSON.parse(bodyText)?.detail;
+  } catch {
+    return undefined;
+  }
+  // detail は文字列 (VOICEVOX が整形したもの) と
+  // 配列 ([{ msg, loc }]、FastAPI 既定の形) のどちらもありうる
+  const texts =
+    typeof detail === "string"
+      ? [detail]
+      : Array.isArray(detail)
+        ? detail.map((d) => (typeof d?.msg === "string" ? d.msg : ""))
+        : [];
+  const found = [];
+  for (const text of texts) {
+    for (const m of text.matchAll(VALIDATION_MESSAGE_RE)) {
+      found.push(m[1].replace(/\s+/g, " ").trim());
+    }
+  }
+  if (found.length === 0) return undefined;
+  return found.join(" / ").slice(0, VALIDATION_MESSAGE_MAX);
+}
+
 export function safePath(path) {
   if (DEBUG_LOG_TEXT) return path;
   const at = path.indexOf("?");
@@ -74,10 +127,16 @@ async function request(
         signal: AbortSignal.timeout(timeoutMs),
       });
       if (res.ok) return res;
+      // 本文は伏せる場合でも読み出す。ユーザーへ返す入力エラーの説明を
+      // extractValidationMessage() で取り出すのに要る (取り出せるのは固定文言だけ)。
+      const bodyText = await res.text().catch(() => "");
       const text = hideResponseBody
         ? "(応答本文は伏せています。DEBUG_LOG_TEXT=1 で表示)"
-        : await res.text().catch(() => "");
-      lastErr = new Error(`VOICEVOX ${method} ${logPath} -> ${res.status} ${text}`);
+        : bodyText;
+      lastErr = new VoicevoxHttpError(
+        `VOICEVOX ${method} ${logPath} -> ${res.status} ${text}`,
+        { status: res.status, detail: extractValidationMessage(bodyText) }
+      );
       if (res.status < 500) break; // クライアントエラーはリトライ対象外
     } catch (err) {
       lastErr = err;
@@ -207,9 +266,57 @@ export function hiraganaToKatakana(str) {
   );
 }
 
-// 全角カタカナのみで構成されているか (VOICEVOX の pronunciation 要件)
-export function isKatakana(str) {
-  return /^[゠-ヿ]+$/.test(str);
+// --- 入力検証 (VOICEVOX 0.25.2 の user_dict/model.py と同じ規則) ---
+//
+// Engine 側で弾かれても 422 になるだけだが、ローカルでも同じ規則を持っておくと
+// 往復を1回省けるうえ、どのオプションが悪いのかを具体的に案内できる。
+// 規則が食い違ったときに困らないよう、最終的な正は常に Engine の 422 側に置く
+// (ここを通っても 422 になりうるので、呼び出し側は必ず isInputError() で分岐すること)。
+//
+// 出典: voicevox_engine/user_dict/model.py, voicevox_engine/utility/text_utility.py
+const PRONUNCIATION_RE = /^[ァ-ヴー]+$/;
+const SUTEGANA = ["ァ", "ィ", "ゥ", "ェ", "ォ", "ャ", "ュ", "ョ", "ヮ", "ッ"];
+const SUTEGANA_EXCEPT_SOKUON = SUTEGANA.slice(0, -1);
+
+// 複数のカタカナで1モーラを構成するパターン + 1文字1モーラのパターン。
+// アクセント型の上限がモーラ数なので、その計算に要る。
+const MORA_PATTERN =
+  /(?:[イ][ェ]|[ヴ][ャュョ]|[ウクグトド][ゥ]|[テデ][ィェャュョ]|[クグ][ヮ]|[キシチニヒミリギジヂビピ][ェャュョ]|[キニヒミリギビピ][ィ]|[クツフヴグ][ァ]|[ウクスツフヴグズ][ィ]|[ウクツフヴグ][ェォ]|[ァ-ヴー])/g;
+
+export function countMora(pronunciation) {
+  return pronunciation.match(MORA_PATTERN)?.length ?? 0;
+}
+
+// 問題があればユーザー向けの理由を、無ければ null を返す
+export function validatePronunciation(pronunciation) {
+  if (!pronunciation) return "読みが空です。";
+  if (!PRONUNCIATION_RE.test(pronunciation)) {
+    return "発音は有効なカタカナでなくてはいけません。(「・」「ー」以外の記号、ヵ・ヶ・ヷ〜ヺ は使えません)";
+  }
+  for (let i = 0; i < pronunciation.length; i++) {
+    const ch = pronunciation[i];
+    const next = pronunciation[i + 1];
+    // 「キャット」のように捨て仮名は連続しうるので、「ッ」だけは
+    // 「ッ」が連続する場合と「ッ」の後に他の捨て仮名が来る場合のみ無効とする
+    if (
+      SUTEGANA.includes(ch) &&
+      next !== undefined &&
+      (SUTEGANA_EXCEPT_SOKUON.includes(next) || (ch === "ッ" && next === "ッ"))
+    ) {
+      return "無効な発音です。(捨て仮名の連続)";
+    }
+    if (ch === "ヮ" && i !== 0 && !["ク", "グ"].includes(pronunciation[i - 1])) {
+      return "無効な発音です。(「くゎ」「ぐゎ」以外の「ゎ」の使用)";
+    }
+  }
+  return null;
+}
+
+export function validateSurface(surface) {
+  if (!surface) return "語が空です。";
+  if (/[\r\n]/.test(surface)) return "語に改行を含めることはできません。";
+  if (surface.includes("\0")) return "語に NULL 文字を含めることはできません。";
+  return null;
 }
 
 // user_dict_word 登録時の共通項目 (固有名詞・平板アクセント寄りのテンプレート)
