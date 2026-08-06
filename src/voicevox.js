@@ -355,9 +355,35 @@ export async function addUserDictWord(surface, pronunciation, accentType = 0, pr
   return res.json(); // uuid 文字列
 }
 
-// ユーザー辞書から単語を削除
+// 登録済みの単語を uuid そのままで書き換える。
+// 「DELETE してから POST」だと、DELETE 成功 + POST 失敗で語が消え、
+// DELETE 失敗 + POST 成功で重複が残る。PUT ならその窓自体が無い。
+// uuid を指定した上書きなので冪等 = 一時的な 5xx はリトライしてよい。
+export async function updateUserDictWord(
+  uuid,
+  surface,
+  pronunciation,
+  accentType = 0,
+  priority = 5
+) {
+  const qs = new URLSearchParams({
+    surface,
+    pronunciation,
+    accent_type: String(accentType),
+    priority: String(priority),
+  });
+  await request(`/user_dict_word/${uuid}?${qs}`, { method: "PUT" });
+}
+
+// ユーザー辞書から単語を削除する。
+// 既に存在しない (404) 場合も「消えている」という結果は同じなので成功として扱う
+// — ここを失敗にすると、Engine を作り直した後に JSON 側の語を二度と消せなくなる。
 export async function deleteUserDictWord(uuid) {
-  await request(`/user_dict_word/${uuid}`, { method: "DELETE" });
+  try {
+    await request(`/user_dict_word/${uuid}`, { method: "DELETE" });
+  } catch (err) {
+    if (err?.status !== 404) throw err;
+  }
 }
 
 // 保存済みエントリ ({ uuid, word, reading, accent }[]) をエンジンへ一括反映する。
