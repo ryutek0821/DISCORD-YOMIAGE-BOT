@@ -213,12 +213,29 @@ function warnCacheOversizeOnce(byteLength) {
   );
 }
 
+// ユーザー辞書を変えると同じ文でも読みが変わるため、キャッシュ済みの WAV は
+// もう使えない。キーは speaker/速度/pitch/抑揚/text だけなので、世代を持たないと
+// LRU から追い出されるか Bot 再起動まで旧発音が返り続ける (頻出文ほど直らない)。
+//
+// 世代が追うのは **Engine 側の辞書の状態** なので、Engine を変更する関数
+// (add/update/delete/import) の成功直後に上げる。実際には変わっていない場合
+// (DELETE の 404 等) に上げてもキャッシュを捨てるだけで害は無い。
+let userDictRevision = 0;
+
+export function bumpUserDictRevision() {
+  userDictRevision++;
+  wavCache.clear();
+}
+
 // テキストを WAV (Buffer) に合成する
 export async function synth(
   text,
   speaker,
   { speedScale = 1.0, pitchScale = 0.0, intonationScale = 1.0 } = {}
 ) {
+  // 合成開始時点の世代。clear() だけでは、辞書変更の**前に**始まった合成が
+  // 変更後に完了して旧発音の WAV を新世代へ入れ直す race が残る。
+  const revision = userDictRevision;
   const cacheKey = `${speaker}:${speedScale}:${pitchScale}:${intonationScale}:${text}`;
   const cached = wavCache.get(cacheKey);
   if (cached) return cached;
@@ -243,7 +260,11 @@ export async function synth(
     body: JSON.stringify(query),
   });
   const wav = Buffer.from(await synthRes.arrayBuffer());
-  if (!wavCache.set(cacheKey, wav)) warnCacheOversizeOnce(wav.byteLength);
+  // 合成中に辞書が変わっていたら、この WAV は旧世代の読み。再生には使うが
+  // (この発言はもう待たせている) キャッシュには載せない。
+  if (revision === userDictRevision && !wavCache.set(cacheKey, wav)) {
+    warnCacheOversizeOnce(wav.byteLength);
+  }
   return wav;
 }
 
@@ -352,6 +373,7 @@ export async function addUserDictWord(surface, pronunciation, accentType = 0, pr
     method: "POST",
     retry: false,
   });
+  bumpUserDictRevision();
   return res.json(); // uuid 文字列
 }
 
@@ -373,6 +395,7 @@ export async function updateUserDictWord(
     priority: String(priority),
   });
   await request(`/user_dict_word/${uuid}?${qs}`, { method: "PUT" });
+  bumpUserDictRevision();
 }
 
 // ユーザー辞書から単語を削除する。
@@ -384,6 +407,7 @@ export async function deleteUserDictWord(uuid) {
   } catch (err) {
     if (err?.status !== 404) throw err;
   }
+  bumpUserDictRevision();
 }
 
 // 保存済みエントリ ({ uuid, word, reading, accent }[]) をエンジンへ一括反映する。
@@ -409,4 +433,5 @@ export async function importUserDict(entries) {
     sensitiveBody: true,
     body: JSON.stringify(dict),
   });
+  bumpUserDictRevision();
 }

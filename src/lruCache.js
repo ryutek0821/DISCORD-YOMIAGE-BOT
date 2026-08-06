@@ -55,6 +55,10 @@ export function createLruCache(
       }
       return true;
     },
+    clear() {
+      cache.clear();
+      bytes = 0;
+    },
     stats() {
       return { entries: cache.size, bytes, evictions, skipped };
     },
