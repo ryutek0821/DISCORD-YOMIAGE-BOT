@@ -4,19 +4,16 @@ import {
   DICTIONARY_MAX_ENTRIES,
   removeDictionaryEntry,
   getDictionary,
-  addUserDictEntry,
-  removeUserDictEntry,
   getUserDict,
 } from "../store.js";
 import {
-  addUserDictWord,
   countMora,
-  deleteUserDictWord,
   hiraganaToKatakana,
   isInputError,
   validatePronunciation,
   validateSurface,
 } from "../voicevox.js";
+import { addWord, removeWord } from "../userDict.js";
 import {
   isOperator,
   parseOperatorIds,
@@ -279,49 +276,45 @@ async function executeWord(interaction, sub) {
       return;
     }
 
+    // Engine への往復は最大30秒かかりうる。Interaction は3秒で失効するので、
+    // 外部 I/O の前に必ず defer しておく。
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-    // 既に同じ語が登録済みならエンジン側の古いエントリを消してから登録し直す
-    const existing = getUserDict().find((e) => e.word === word);
-    if (existing?.uuid) {
-      await deleteUserDictWord(existing.uuid).catch(() => {});
-    }
-
-    let uuid;
+    let result;
     try {
-      uuid = await addUserDictWord(word, reading, accent, 5);
+      result = await addWord(word, reading, accent);
     } catch (err) {
       logError("VOICEVOXユーザー辞書への登録に失敗", err);
       await interaction.editReply(dictFailureMessage(err, "登録"));
       return;
     }
 
-    addUserDictEntry(word, reading, accent, uuid);
     await interaction.editReply(
-      `登録しました: 「${word}」→「${reading}」(アクセント型: ${accent})`
+      `${result.updated ? "更新しました" : "登録しました"}: ` +
+        `「${word}」→「${reading}」(アクセント型: ${accent})`
     );
     return;
   }
 
   if (sub === "remove") {
     const word = interaction.options.getString("word");
-    const entry = removeUserDictEntry(word);
-    if (!entry) {
-      await interaction.reply({
-        content: `「${word}」は登録されていません。`,
-        flags: MessageFlags.Ephemeral,
-      });
+    // remove も Engine の DELETE を待つ。add と同じく defer が先。
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+    let result;
+    try {
+      result = await removeWord(word);
+    } catch (err) {
+      // JSON からは消していない = 再実行すれば消せる。成功と偽らない
+      // (偽ると Engine 側に残った語が誰にも消せなくなる)。
+      logError("VOICEVOXユーザー辞書からの削除に失敗", err);
+      await interaction.editReply(dictFailureMessage(err, "削除"));
       return;
     }
-    if (entry.uuid) {
-      await deleteUserDictWord(entry.uuid).catch((err) => {
-        console.error("VOICEVOXユーザー辞書からの削除に失敗:", err);
-      });
-    }
-    await interaction.reply({
-      content: `削除しました: 「${word}」`,
-      flags: MessageFlags.Ephemeral,
-    });
+
+    await interaction.editReply(
+      result.removed ? `削除しました: 「${word}」` : `「${word}」は登録されていません。`
+    );
     return;
   }
 

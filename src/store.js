@@ -280,12 +280,16 @@ export function getUserDict() {
   return userDict;
 }
 
-// uuid は VOICEVOX 側が発行したものをそのまま保存する (コンテナ再作成後の復元に使うため)
+// uuid は VOICEVOX 側が発行したものをそのまま保存する (コンテナ再作成後の復元に使うため)。
+//
+// 保存に成功してから in-memory を差し替える。逆順だと save() が投げたときに
+// 「メモリ上は登録済み・ディスクには無い」状態が残り、次の再起動で復元対象から
+// 漏れた語が Engine 側にだけ残る (追跡不能な孤児になる)。
 export function addUserDictEntry(word, reading, accent, uuid) {
-  const list = getUserDict().filter((e) => e.word !== word);
-  list.push({ word, reading, accent, uuid });
-  userDict = list;
-  save(userDictPath, userDict);
+  const next = getUserDict().filter((e) => e.word !== word);
+  next.push({ word, reading, accent, uuid });
+  save(userDictPath, next);
+  userDict = next;
   return userDict;
 }
 
@@ -293,8 +297,10 @@ export function addUserDictEntry(word, reading, accent, uuid) {
 export function removeUserDictEntry(word) {
   const before = getUserDict();
   const entry = before.find((e) => e.word === word) ?? null;
-  userDict = before.filter((e) => e.word !== word);
-  save(userDictPath, userDict);
+  if (!entry) return null;
+  const next = before.filter((e) => e.word !== word);
+  save(userDictPath, next);
+  userDict = next;
   return entry;
 }
 
